@@ -15,7 +15,9 @@
 --   • Replaces gen_random_uuid() key (changed every query) with stable facility_id value
 --   • All metric subqueries are now scoped to facility_id
 
-CREATE OR REPLACE VIEW public.weekly_grand_total
+DROP VIEW IF EXISTS public.weekly_grand_total;
+
+CREATE VIEW public.weekly_grand_total
 WITH (security_invoker='true') AS
 WITH facility_config AS (
     SELECT
