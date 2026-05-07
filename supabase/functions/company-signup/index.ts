@@ -11,7 +11,7 @@ const PARAM_ID_MAP: Record<string, string> = {
   units:            'units',
 }
 
-const TRIAL_DAYS = 14
+const TRIAL_DAYS = 30
 
 function welcomeEmailHtml(adminName: string, companyName: string, trialDays: number): string {
   const firstName = adminName.split(' ')[0]
