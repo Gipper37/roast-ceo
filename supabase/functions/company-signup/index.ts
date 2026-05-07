@@ -244,9 +244,9 @@ Deno.serve(async (req) => {
         // non-deletable. is_default still marks the single auto-pick
         // category (Standard) for new items where the user hasn't
         // chosen one explicitly. See migration 20260505000001.
-        { facility_id: facilityId, company_id: companyId, name: 'Quick Restock', description: 'Items available locally within 1-2 weeks', target_months: 4, reorder_months: 2, is_default: false, is_global: true, sort_order: 1 },
-        { facility_id: facilityId, company_id: companyId, name: 'Standard', description: 'Typical supplies with standard lead times', target_months: 6, reorder_months: 3, is_default: true, is_global: true, sort_order: 2 },
-        { facility_id: facilityId, company_id: companyId, name: 'Extended Lead', description: 'Imports, custom prints, or specialty items', target_months: 6, reorder_months: 3, is_default: false, is_global: true, sort_order: 3 },
+        { facility_id: facilityId, company_id: companyId, name: 'Quick Restock', description: 'Items available locally within 1-2 weeks', target_months: 3, reorder_months: 0.5, is_default: false, is_global: true, sort_order: 1 },
+        { facility_id: facilityId, company_id: companyId, name: 'Standard', description: 'Typical supplies with standard lead times', target_months: 6, reorder_months: 1.5, is_default: true, is_global: true, sort_order: 2 },
+        { facility_id: facilityId, company_id: companyId, name: 'Extended Lead', description: 'Imports, custom prints, or specialty items', target_months: 12, reorder_months: 6, is_default: false, is_global: true, sort_order: 3 },
       ])
     if (rcErr) throw rcErr
 
