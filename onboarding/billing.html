@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>RoastOS — Billing Portal</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    :root {
+      --brown:  #4a2c2a;
+      --tan:    #d4a96a;
+      --cream:  #fdf6ec;
+      --muted:  #8a6e5e;
+      --error:  #c0392b;
+      --radius: 8px;
+    }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      background: var(--cream);
+      color: var(--brown);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 16px;
+      padding: 40px 16px;
+      text-align: center;
+    }
+    .spinner {
+      width: 36px; height: 36px;
+      border: 3px solid rgba(74,44,42,0.15);
+      border-top-color: var(--tan);
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    h2 { font-size: 1.1rem; font-weight: 600; }
+    p  { font-size: 0.85rem; color: var(--muted); }
+    .error {
+      background: #fdf0ef;
+      border: 1.5px solid #f5c6c2;
+      border-radius: var(--radius);
+      color: var(--error);
+      font-size: 0.88rem;
+      padding: 12px 18px;
+      max-width: 400px;
+      display: none;
+    }
+    .error.visible { display: block; }
+  </style>
+</head>
+<body>
+  <div class="spinner" id="spinner"></div>
+  <h2 id="message">Loading your billing portal…</h2>
+  <p>You'll be redirected to Stripe to manage your subscription.</p>
+  <div class="error" id="errorBox"></div>
+
+  <script>
+    const SUPABASE_URL      = 'https://pwpslalerytymorcodlv.supabase.co'
+    const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InB3cHNsYWxlcnl0eW1vcmNvZGx2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njg0MjM3NDcsImV4cCI6MjA4Mzk5OTc0N30.MZsWvHwfhNirxwC4tC6tkiT3_fBn3ZMK0AvjZ0YaaTQ'
+    const PORTAL_FN         = `${SUPABASE_URL}/functions/v1/create-portal-session`
+
+    const params    = new URLSearchParams(window.location.search)
+    const companyId = params.get('company_id') || ''
+    // return_url: where Stripe sends the user after they're done in the portal
+    const returnUrl = params.get('return_url') || window.location.origin
+
+    async function loadPortal() {
+      if (!companyId) {
+        showError('Missing company ID. Please return to the app and try again.')
+        return
+      }
+
+      try {
+        const res = await fetch(PORTAL_FN, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            apikey: SUPABASE_ANON_KEY,
+            Authorization: `Bearer ${SUPABASE_ANON_KEY}`,
+          },
+          body: JSON.stringify({ company_id: companyId, return_url: returnUrl }),
+        })
+        const data = await res.json()
+        if (!res.ok || !data.url) throw new Error(data.error || 'Could not open billing portal')
+        window.location.href = data.url
+
+      } catch (err) {
+        showError(err.message || 'Something went wrong. Please try again.')
+      }
+    }
+
+    function showError(msg) {
+      document.getElementById('spinner').style.display = 'none'
+      document.getElementById('message').textContent = 'Unable to open billing portal'
+      const box = document.getElementById('errorBox')
+      box.textContent = msg
+      box.classList.add('visible')
+    }
+
+    loadPortal()
+  </script>
+</body>
+</html>
