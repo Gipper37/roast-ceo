@@ -1,0 +1,52 @@
+name: DB push (staging)
+
+# Applies migrations to the STAGING Supabase project on every merge to main.
+# This is the gate: if a migration breaks staging, it doesn't reach prod.
+#
+# Requires repo secrets:
+#   SUPABASE_ACCESS_TOKEN   — Personal access token from supabase dashboard
+#                             (https://supabase.com/dashboard/account/tokens)
+#   SUPABASE_STAGING_REF    — Staging project ref (e.g. abcdefghijklmnop)
+#   SUPABASE_STAGING_DB_PASSWORD — staging postgres password
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'supabase/migrations/**'
+      - 'supabase/functions/**'
+      - 'supabase/templates/**'
+      - '.github/workflows/db-push-staging.yml'
+
+concurrency:
+  group: db-push-staging
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link staging project
+        run: |
+          supabase link --project-ref "${{ secrets.SUPABASE_STAGING_REF }}" \
+            --password "${{ secrets.SUPABASE_STAGING_DB_PASSWORD }}"
+
+      - name: Push migrations
+        run: supabase db push --linked --include-all
+
+      - name: Deploy edge functions
+        run: |
+          for fn in supabase/functions/*/; do
+            name=$(basename "$fn")
+            [[ "$name" == "_shared" ]] && continue
+            echo "Deploying function: $name"
+            supabase functions deploy "$name" --project-ref "${{ secrets.SUPABASE_STAGING_REF }}"
+          done

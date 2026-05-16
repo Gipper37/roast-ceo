@@ -1,0 +1,54 @@
+name: Migration lint
+
+# Runs on every PR + push. Catches the obvious problems before they
+# reach staging: duplicate filenames, naming convention drift, empty
+# migration files.
+
+on:
+  pull_request:
+    paths: ['supabase/migrations/**']
+  push:
+    branches: [main]
+    paths: ['supabase/migrations/**']
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check filename pattern
+        run: |
+          # Every migration file must match YYYYMMDDHHMMSS_snake_name.sql
+          # (or our legacy variant YYYYMMDDXXXXXX_snake_name.sql)
+          bad=$(find supabase/migrations -type f -name '*.sql' \
+            ! -regex '.*/[0-9]\{14\}_[a-z0-9_]\+\.sql' || true)
+          if [[ -n "$bad" ]]; then
+            echo "✗ Migration files with non-conforming names:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "✓ All migration filenames conform"
+
+      - name: Check for empty migrations
+        run: |
+          empty=$(find supabase/migrations -type f -name '*.sql' -size -10c || true)
+          if [[ -n "$empty" ]]; then
+            echo "✗ Empty migration files:"
+            echo "$empty"
+            exit 1
+          fi
+          echo "✓ No empty migrations"
+
+      - name: Check for duplicate timestamps
+        run: |
+          dupes=$(ls supabase/migrations/*.sql 2>/dev/null \
+            | xargs -n1 basename \
+            | awk -F'_' '{print substr($1,1,14)}' \
+            | sort | uniq -d)
+          if [[ -n "$dupes" ]]; then
+            echo "✗ Duplicate migration timestamps:"
+            echo "$dupes"
+            exit 1
+          fi
+          echo "✓ No duplicate timestamps"

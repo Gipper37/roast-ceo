@@ -1,0 +1,51 @@
+name: DB push (prod)
+
+# Applies migrations to PROD on a tagged release. The tag must match
+# `release-*` (e.g. `release-2026-05-20`). This is intentionally manual:
+# you cut a tag locally with `git tag release-YYYY-MM-DD && git push --tags`
+# only after staging has been verified.
+#
+# Requires repo secrets:
+#   SUPABASE_ACCESS_TOKEN
+#   SUPABASE_PROD_REF           (currently pwpslalerytymorcodlv)
+#   SUPABASE_PROD_DB_PASSWORD
+
+on:
+  push:
+    tags:
+      - 'release-*'
+
+concurrency:
+  group: db-push-prod
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    environment: production  # GitHub will require manual approval if you
+                              # configure a protection rule on this environment
+    env:
+      SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Link prod project
+        run: |
+          supabase link --project-ref "${{ secrets.SUPABASE_PROD_REF }}" \
+            --password "${{ secrets.SUPABASE_PROD_DB_PASSWORD }}"
+
+      - name: Push migrations
+        run: supabase db push --linked --include-all
+
+      - name: Deploy edge functions
+        run: |
+          for fn in supabase/functions/*/; do
+            name=$(basename "$fn")
+            [[ "$name" == "_shared" ]] && continue
+            echo "Deploying function: $name"
+            supabase functions deploy "$name" --project-ref "${{ secrets.SUPABASE_PROD_REF }}"
+          done
