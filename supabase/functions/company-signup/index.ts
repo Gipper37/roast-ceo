@@ -58,16 +58,14 @@ function welcomeEmailHtml(adminName: string, companyName: string, trialDays: num
               </p>
             </td>
           </tr>
-          <!-- Footer -->
-          <tr>
-            <td style="padding:20px 40px;border-top:1px solid #eeeeee;text-align:center;">
-              <p style="margin:0;font-size:12px;color:#aaaaaa;">&copy; 2026 STRATA &mdash; Built by roasters, for roasters.</p>
-            </td>
-          </tr>
         </table>
       </td>
     </tr>
   </table>
+  <!-- STRATA-direct footer (matches lib/shop/emailFooter.ts strataFooterHtml). -->
+  <p style="margin:16px auto 0;max-width:560px;color:#9ca3af;font-size:11px;text-align:center;">
+    Sent by <a href="https://strataroast.com" style="color:#9ca3af;text-decoration:underline;">STRATA Roast</a> &mdash; built by roasters, for roasters.
+  </p>
 </body>
 </html>`
 }
