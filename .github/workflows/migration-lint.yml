@@ -21,7 +21,7 @@ jobs:
         run: |
           # Every migration file must match YYYYMMDDHHMMSS_snake_name.sql
           # (or our legacy variant YYYYMMDDXXXXXX_snake_name.sql)
-          bad=$(find supabase/migrations -type f -name '*.sql' \
+          bad=$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' \
             ! -regex '.*/[0-9]\{14\}_[a-z0-9_]\+\.sql' || true)
           if [[ -n "$bad" ]]; then
             echo "✗ Migration files with non-conforming names:"
@@ -32,7 +32,7 @@ jobs:
 
       - name: Check for empty migrations
         run: |
-          empty=$(find supabase/migrations -type f -name '*.sql' -size -10c || true)
+          empty=$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' -size -10c || true)
           if [[ -n "$empty" ]]; then
             echo "✗ Empty migration files:"
             echo "$empty"
@@ -42,7 +42,7 @@ jobs:
 
       - name: Check for duplicate timestamps
         run: |
-          dupes=$(ls supabase/migrations/*.sql 2>/dev/null \
+          dupes=$(find supabase/migrations -maxdepth 1 -name '*.sql' 2>/dev/null \
             | xargs -n1 basename \
             | awk -F'_' '{print substr($1,1,14)}' \
             | sort | uniq -d)
