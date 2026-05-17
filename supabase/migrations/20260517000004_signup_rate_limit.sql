@@ -23,9 +23,21 @@ ALTER TABLE public.signup_rate_limit ENABLE ROW LEVEL SECURITY;
 COMMENT ON TABLE public.signup_rate_limit IS
   'Per-IP signup throttle. Service-role only (no RLS policies by design). Pruned hourly to keep table size bounded.';
 
--- Prune entries older than 1 day every hour
-SELECT cron.schedule(
-  'signup_rate_limit_prune',
-  '0 * * * *',
-  $$DELETE FROM public.signup_rate_limit WHERE attempted_at < now() - interval '1 day'$$
-);
+-- Prune entries older than 1 day every hour, IF pg_cron is enabled.
+-- Skipped on environments where the extension isn't available (e.g.
+-- Supabase free tier where it must be enabled via the dashboard).
+-- Without the prune the table grows by ~1 row per signup attempt
+-- and can be cleared by hand if it ever matters.
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
+    PERFORM cron.schedule(
+      'signup_rate_limit_prune',
+      '0 * * * *',
+      $cron$DELETE FROM public.signup_rate_limit WHERE attempted_at < now() - interval '1 day'$cron$
+    );
+  ELSE
+    RAISE NOTICE 'pg_cron not installed — skipping signup_rate_limit prune schedule';
+  END IF;
+END
+$$;
