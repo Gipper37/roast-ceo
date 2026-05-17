@@ -60,25 +60,32 @@ ON CONFLICT (plan_id, permission_id) DO UPDATE SET granted = true;
 -- Role grants — comprehensive sweep
 -- ────────────────────────────────────────────────────────────────
 
+-- All role grants below SELECT FROM user_roles so they're FK-safe
+-- on envs without seed data (staging on baseline). No-op there.
+
 -- equipment_tech: view, create, edit, log_maintenance (NOT cost,
 --                 NOT archive, NOT admin)
 INSERT INTO public.role_permissions (role_id, permission_id, granted)
-SELECT 'equipment_tech', perm.permission_id, true
-FROM (VALUES
+SELECT r.role_id, perm.permission_id, true
+FROM public.user_roles r
+CROSS JOIN (VALUES
   ('equipment.view'),
   ('equipment.create'),
   ('equipment.edit'),
   ('equipment.log_maintenance')
 ) perm(permission_id)
+WHERE r.role_id = 'equipment_tech'
 ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
 
 -- assistant_roaster: tighten existing view-only by adding edit + log
 INSERT INTO public.role_permissions (role_id, permission_id, granted)
-SELECT 'assistant_roaster', perm.permission_id, true
-FROM (VALUES
+SELECT r.role_id, perm.permission_id, true
+FROM public.user_roles r
+CROSS JOIN (VALUES
   ('equipment.edit'),
   ('equipment.log_maintenance')
 ) perm(permission_id)
+WHERE r.role_id = 'assistant_roaster'
 ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
 
 -- Cost perms: company_admin, facility_admin, manager only
@@ -89,9 +96,7 @@ CROSS JOIN (VALUES ('equipment.view_cost'), ('equipment.edit_cost')) perm(permis
 WHERE r.role_id IN ('company_admin', 'facility_admin', 'manager')
 ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
 
--- Explicitly deny cost perms to lower roles (so deny_message is
--- pulled when they try; and so the dev portal shows them as denied
--- with a clear false rather than absent). Insert with granted=false.
+-- Explicitly deny cost perms to lower roles
 INSERT INTO public.role_permissions (role_id, permission_id, granted)
 SELECT r.role_id, perm.permission_id, false
 FROM public.user_roles r
