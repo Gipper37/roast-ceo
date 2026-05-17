@@ -10,6 +10,7 @@ name: DB push (staging)
 #   SUPABASE_STAGING_DB_PASSWORD — staging postgres password
 
 on:
+  workflow_dispatch:  # manual trigger from GitHub UI or `gh workflow run`
   push:
     branches: [main]
     paths:
