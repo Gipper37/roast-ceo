@@ -5,11 +5,16 @@ name: Migration lint
 # migration files.
 
 on:
+  workflow_dispatch:
   pull_request:
-    paths: ['supabase/migrations/**']
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/migration-lint.yml'
   push:
     branches: [main]
-    paths: ['supabase/migrations/**']
+    paths:
+      - 'supabase/migrations/**'
+      - '.github/workflows/migration-lint.yml'
 
 jobs:
   lint:
