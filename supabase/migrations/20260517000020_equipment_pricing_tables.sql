@@ -34,9 +34,10 @@ CREATE TABLE IF NOT EXISTS public.company_labor_rate (
   created_at    timestamptz NOT NULL DEFAULT now(),
   updated_at    timestamptz NOT NULL DEFAULT now(),
   created_by    text,
-  updated_by    text,
-  UNIQUE (company_id, lower(rate_name))
+  updated_by    text
 );
+CREATE UNIQUE INDEX company_labor_rate_name_uq
+  ON public.company_labor_rate (company_id, lower(rate_name));
 CREATE INDEX company_labor_rate_company_idx ON public.company_labor_rate (company_id, sort_order);
 
 ALTER TABLE public.company_labor_rate ENABLE ROW LEVEL SECURITY;
