@@ -33,11 +33,13 @@ git commit -m "Add my_change: <what + why>"
 git push
 ```
 
-When staging looks good, tag a release to promote to prod:
+When staging looks good, promote to prod with the release helper:
 ```bash
-git tag release-$(date +%Y-%m-%d)
-git push --tags
+./scripts/release.sh
 ```
+
+Which tags the current `main` as `release-YYYY-MM-DD` and pushes the tag.
+CI picks up the tag and applies migrations + deploys edge functions to prod.
 
 `scripts/db-push.sh`:
 - DEFAULT: targets **staging**. Safe to iterate.
