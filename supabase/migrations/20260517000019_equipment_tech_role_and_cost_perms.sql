@@ -25,7 +25,8 @@
 -- ────────────────────────────────────────────────────────────────
 -- A) New role
 -- ────────────────────────────────────────────────────────────────
-INSERT INTO public.user_roles (role_id) VALUES ('equipment_tech')
+INSERT INTO public.user_roles (role_id, role_name)
+VALUES ('equipment_tech', 'Equipment Tech')
 ON CONFLICT (role_id) DO NOTHING;
 
 
