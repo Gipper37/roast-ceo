@@ -20,9 +20,10 @@ jobs:
       - name: Check filename pattern
         run: |
           # Every migration file must match YYYYMMDDHHMMSS_snake_name.sql
-          # (or our legacy variant YYYYMMDDXXXXXX_snake_name.sql)
+          # Use grep -E rather than find -regex — the latter has BSD vs
+          # GNU portability issues with \{n\} quantifiers.
           bad=$(find supabase/migrations -maxdepth 1 -type f -name '*.sql' \
-            ! -regex '.*/[0-9]\{14\}_[a-z0-9_]\+\.sql' || true)
+            | grep -Ev '/[0-9]{14}_[a-z0-9_]+\.sql$' || true)
           if [[ -n "$bad" ]]; then
             echo "✗ Migration files with non-conforming names:"
             echo "$bad"
