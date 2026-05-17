@@ -43,8 +43,8 @@ ON CONFLICT (permission_id) DO NOTHING;
 -- zero plan rows so this becomes a no-op there; prod has all 4 and
 -- gets the grants.
 -- ------------------------------------------------------------
-INSERT INTO public.plan_permissions (plan_id, permission_id)
-SELECT p.plan_id, perm.permission_id
+INSERT INTO public.plan_permissions (plan_id, permission_id, granted)
+SELECT p.plan_id, perm.permission_id, true
 FROM public.subscription_plans p
 CROSS JOIN (VALUES
   ('equipment.view'),
@@ -55,15 +55,15 @@ CROSS JOIN (VALUES
   ('equipment.admin')
 ) perm(permission_id)
 WHERE p.plan_id IN ('pro','enterprise','enterprise_plus')
-ON CONFLICT (plan_id, permission_id) DO NOTHING;
+ON CONFLICT (plan_id, permission_id) DO UPDATE SET granted = true;
 
 
 -- ------------------------------------------------------------
 -- Role grants — same FK-safe pattern against user_roles.
 -- ------------------------------------------------------------
 -- company_admin, manager, facility_admin: all 6 permissions
-INSERT INTO public.role_permissions (role_id, permission_id)
-SELECT r.role_id, perm.permission_id
+INSERT INTO public.role_permissions (role_id, permission_id, granted)
+SELECT r.role_id, perm.permission_id, true
 FROM public.user_roles r
 CROSS JOIN (VALUES
   ('equipment.view'),
@@ -74,19 +74,19 @@ CROSS JOIN (VALUES
   ('equipment.admin')
 ) perm(permission_id)
 WHERE r.role_id IN ('company_admin','manager','facility_admin')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
 
 -- roastmaster: view + log_maintenance
-INSERT INTO public.role_permissions (role_id, permission_id)
-SELECT r.role_id, perm.permission_id
+INSERT INTO public.role_permissions (role_id, permission_id, granted)
+SELECT r.role_id, perm.permission_id, true
 FROM public.user_roles r
 CROSS JOIN (VALUES ('equipment.view'), ('equipment.log_maintenance')) perm(permission_id)
 WHERE r.role_id = 'roastmaster'
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
 
 -- assistant_roaster, staff, sales_person: view only
-INSERT INTO public.role_permissions (role_id, permission_id)
-SELECT r.role_id, 'equipment.view'
+INSERT INTO public.role_permissions (role_id, permission_id, granted)
+SELECT r.role_id, 'equipment.view', true
 FROM public.user_roles r
 WHERE r.role_id IN ('assistant_roaster','staff','sales_person')
-ON CONFLICT (role_id, permission_id) DO NOTHING;
+ON CONFLICT (role_id, permission_id) DO UPDATE SET granted = true;
