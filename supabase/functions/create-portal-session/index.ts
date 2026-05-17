@@ -1,6 +1,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2'
 import Stripe from 'https://esm.sh/stripe@14?target=deno'
 import { corsHeaders } from '../_shared/cors.ts'
+import { verifyCompanyAccess } from '../_shared/verifyCompanyAccess.ts'
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -33,6 +34,12 @@ Deno.serve(async (req) => {
   if (!company_id || !return_url) {
     return json({ error: 'Missing required fields: company_id, return_url' }, 400)
   }
+
+  // Verify the caller actually belongs to this company. Without this
+  // anyone discovering the function URL could POST with any company_id
+  // and open the Stripe billing portal (cancel/modify subscription).
+  const access = await verifyCompanyAccess(req, company_id)
+  if (!access.ok) return access.response
 
   // Look up stripe_customer_id for this company
   const { data: company, error: companyErr } = await supabase
