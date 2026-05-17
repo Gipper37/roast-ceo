@@ -36,11 +36,16 @@ ON CONFLICT (permission_id) DO NOTHING;
 
 -- ------------------------------------------------------------
 -- Plan grants — Pro, Enterprise, Enterprise+ get equipment access.
--- Starter does NOT (mirrors how customer.* + roast.* are gated).
+-- Starter does NOT (mirrors customer.* + roast.* gating).
+--
+-- FK-safe SELECT: only inserts rows for plans that actually exist in
+-- subscription_plans. Staging (squashed baseline, no seed data) has
+-- zero plan rows so this becomes a no-op there; prod has all 4 and
+-- gets the grants.
 -- ------------------------------------------------------------
 INSERT INTO public.plan_permissions (plan_id, permission_id)
 SELECT p.plan_id, perm.permission_id
-FROM (VALUES ('pro'), ('enterprise'), ('enterprise_plus')) p(plan_id)
+FROM public.subscription_plans p
 CROSS JOIN (VALUES
   ('equipment.view'),
   ('equipment.create'),
@@ -49,16 +54,17 @@ CROSS JOIN (VALUES
   ('equipment.log_maintenance'),
   ('equipment.admin')
 ) perm(permission_id)
+WHERE p.plan_id IN ('pro','enterprise','enterprise_plus')
 ON CONFLICT (plan_id, permission_id) DO NOTHING;
 
 
 -- ------------------------------------------------------------
--- Role grants
+-- Role grants — same FK-safe pattern against user_roles.
 -- ------------------------------------------------------------
--- company_admin, manager, facility_admin: everything
+-- company_admin, manager, facility_admin: all 6 permissions
 INSERT INTO public.role_permissions (role_id, permission_id)
 SELECT r.role_id, perm.permission_id
-FROM (VALUES ('company_admin'), ('manager'), ('facility_admin')) r(role_id)
+FROM public.user_roles r
 CROSS JOIN (VALUES
   ('equipment.view'),
   ('equipment.create'),
@@ -67,23 +73,20 @@ CROSS JOIN (VALUES
   ('equipment.log_maintenance'),
   ('equipment.admin')
 ) perm(permission_id)
+WHERE r.role_id IN ('company_admin','manager','facility_admin')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- roastmaster: view + log_maintenance (does the in-house roaster work daily)
+-- roastmaster: view + log_maintenance
 INSERT INTO public.role_permissions (role_id, permission_id)
-VALUES
-  ('roastmaster', 'equipment.view'),
-  ('roastmaster', 'equipment.log_maintenance')
+SELECT r.role_id, perm.permission_id
+FROM public.user_roles r
+CROSS JOIN (VALUES ('equipment.view'), ('equipment.log_maintenance')) perm(permission_id)
+WHERE r.role_id = 'roastmaster'
 ON CONFLICT (role_id, permission_id) DO NOTHING;
 
--- assistant_roaster, staff: view only
+-- assistant_roaster, staff, sales_person: view only
 INSERT INTO public.role_permissions (role_id, permission_id)
 SELECT r.role_id, 'equipment.view'
-FROM (VALUES ('assistant_roaster'), ('staff')) r(role_id)
-ON CONFLICT (role_id, permission_id) DO NOTHING;
-
--- sales_person: view (customer equipment matters for them; e.g. "what
--- gear does this account have?" is a sales-relevant question)
-INSERT INTO public.role_permissions (role_id, permission_id)
-VALUES ('sales_person', 'equipment.view')
+FROM public.user_roles r
+WHERE r.role_id IN ('assistant_roaster','staff','sales_person')
 ON CONFLICT (role_id, permission_id) DO NOTHING;
