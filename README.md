@@ -26,15 +26,28 @@ vim supabase/migrations/$(date +%Y%m%d%H%M%S)_my_change.sql
 git add supabase/migrations/<file>
 git commit -m "Add my_change: <what + why>"
 
-# 3. only then apply to prod
+# 3. apply to STAGING (default) and verify
 ./scripts/db-push.sh
+
+# 4. push the commit so CI replays from scratch and confirms
+git push
 ```
 
-`scripts/db-push.sh` wraps `supabase db push --linked` and **refuses to run
-on a dirty tree**. This stops the drift that produced 349 untracked
-migrations between Feb and May 2026.
+When staging looks good, tag a release to promote to prod:
+```bash
+git tag release-$(date +%Y-%m-%d)
+git push --tags
+```
 
-Emergency override (use sparingly): `FORCE_DIRTY=1 ./scripts/db-push.sh`,
+`scripts/db-push.sh`:
+- DEFAULT: targets **staging**. Safe to iterate.
+- `--prod` flag targets prod and requires typing the project ref to confirm.
+  Reserved for emergencies; the canonical prod path is the release tag above.
+- REFUSES to run on a dirty tree (uncommitted changes under `supabase/`
+  or `schema.sql`). This stops the drift that produced 349 untracked
+  migrations between Feb and May 2026.
+
+Emergency override for dirty tree: `FORCE_DIRTY=1 ./scripts/db-push.sh`,
 then commit immediately.
 
 ## CI
