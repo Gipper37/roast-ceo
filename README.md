@@ -62,7 +62,13 @@ CI is dormant until staging is created and secrets are added.
 1. Develop on `main` (PRs welcome).
 2. Merge to `main` → staging gets the changes automatically.
 3. Verify in staging.
-4. `git tag release-YYYY-MM-DD && git push --tags` → prod gets the changes.
+4. **Pre-release RLS check** (read-only, safe to run against prod):
+   ```bash
+   ./scripts/rls-cross-tenant-test.sh prod   # no policy errors / leaks
+   ./scripts/rls-two-tenant-test.sh prod     # 2 real users, no overlap
+   ```
+   Both must pass before tagging a release.
+5. `git tag release-YYYY-MM-DD && git push --tags` → prod gets the changes.
 
 ## Local development
 
