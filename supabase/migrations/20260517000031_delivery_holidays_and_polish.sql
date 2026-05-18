@@ -30,5 +30,5 @@ COMMENT ON TABLE public.company_holiday IS
 -- (status IN open/packed + delivery_date = today + scoped by
 -- company via existing RLS) cheap to evaluate per page load.
 CREATE INDEX IF NOT EXISTS orders_status_delivery_date_idx
-  ON public.orders (delivery_date, status)
-  WHERE delivery_date IS NOT NULL AND status IN ('Open', 'Packed');
+  ON public.orders (delivery_date, order_status)
+  WHERE delivery_date IS NOT NULL AND order_status IN ('Open', 'Packed');
