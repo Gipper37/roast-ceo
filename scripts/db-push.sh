@@ -98,4 +98,17 @@ echo "→ linking $ENV_LABEL"
 "$SUPABASE" link --project-ref "$REF" --password "$PW" >/dev/null
 
 echo "→ $SUPABASE db push --linked ${EXTRA_ARGS[*]:-}"
-exec "$SUPABASE" db push --linked --password "$PW" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+"$SUPABASE" db push --linked --password "$PW" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+
+# Force PostgREST to refresh its schema cache. Without this, new
+# tables / columns added in the migration take up to ~10 minutes to
+# show up via the REST endpoint — long enough to silently break the
+# app for any user who hits a fresh query. Bit me twice (equipment +
+# delivery rollouts) before adding this step.
+echo "→ reloading PostgREST schema cache"
+PSQL="$(brew --prefix 2>/dev/null)/Cellar/postgresql@17/17.8/bin/psql"
+[[ -x "$PSQL" ]] || PSQL="psql"
+PGPASSWORD="$PW" "$PSQL" "postgresql://postgres@db.${REF}.supabase.co:5432/postgres" \
+  -c "NOTIFY pgrst, 'reload schema';" >/dev/null 2>&1 \
+  && echo "  ✓ schema reload notified" \
+  || echo "  ⚠ schema reload failed (non-fatal — PostgREST will pick up changes within 10min)"

@@ -41,6 +41,19 @@ jobs:
       - name: Push migrations
         run: supabase db push --linked --include-all
 
+      - name: Reload PostgREST schema cache
+        # Without this, new tables / columns from the migration take
+        # ~10 minutes to show up via the REST endpoint — long enough
+        # to silently break the app on first hit. Bit us twice
+        # (equipment + delivery rollouts) before adding this step.
+        run: |
+          sudo apt-get install -y postgresql-client >/dev/null 2>&1 || true
+          PGPASSWORD="${{ secrets.SUPABASE_PROD_DB_PASSWORD }}" psql \
+            "postgresql://postgres@db.${{ secrets.SUPABASE_PROD_REF }}.supabase.co:5432/postgres" \
+            -c "NOTIFY pgrst, 'reload schema';" \
+            && echo "✓ schema reload notified" \
+            || echo "⚠ schema reload failed (non-fatal — cache will refresh within 10min)"
+
       - name: Deploy edge functions
         run: |
           for fn in supabase/functions/*/; do
