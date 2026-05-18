@@ -131,7 +131,7 @@ $$;
 -- ────────────────────────────────────────────────────────────────
 -- Permissions — delivery.* family, Pro+ only
 -- ────────────────────────────────────────────────────────────────
-INSERT INTO public.permissions (permission_id, category, label, description, error_message, plan_gated, sort_order) VALUES
+INSERT INTO public.permissions (permission_id, category, label, description, default_deny_message, is_plan_gated, sort_order) VALUES
   ('delivery.view',              'delivery', 'View delivery routes',
     'See the day-by-day delivery view and zone schedules.',
     'You do not have permission to view delivery routes.', true, 200),
@@ -146,8 +146,8 @@ INSERT INTO public.permissions (permission_id, category, label, description, err
     'You do not have permission to mark deliveries complete.', true, 230)
 ON CONFLICT (permission_id) DO UPDATE SET
   category = EXCLUDED.category, label = EXCLUDED.label,
-  description = EXCLUDED.description, error_message = EXCLUDED.error_message,
-  plan_gated = EXCLUDED.plan_gated, sort_order = EXCLUDED.sort_order;
+  description = EXCLUDED.description, default_deny_message = EXCLUDED.default_deny_message,
+  is_plan_gated = EXCLUDED.is_plan_gated, sort_order = EXCLUDED.sort_order;
 
 
 -- Plan grants — Pro and up
