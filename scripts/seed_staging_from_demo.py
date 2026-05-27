@@ -43,13 +43,17 @@ STAGING_REF = kc("supabase-staging-ref")
 # Some tables are company-scoped, some facility-scoped — pick whichever
 # matches the data.
 TABLES = [
-    # Global catalog tables (no tenant scope). These MUST come first —
-    # the migration grants in plan_permissions use SELECT FROM
-    # subscription_plans WHERE plan_id IN (...) which silently inserts
-    # zero rows if subscription_plans is empty. That's how every
-    # plan-gated permission ended up denied on staging the first time.
+    # Global catalog tables (no tenant scope). MUST come first — most
+    # migration grants use SELECT FROM <catalog> WHERE <id> IN (...)
+    # which silently inserts zero rows if the catalog is empty.
+    # Discovered the hard way: staging started with subscription_plans
+    # AND user_roles both empty, so every plan_permission and most
+    # role_permission grants from old migrations were no-ops, and
+    # every gated feature denied for everyone.
     ("subscription_plans",     "1=1"),
     ("plan_permissions",       "1=1"),
+    ("user_roles",             "1=1"),
+    ("role_permissions",       "1=1"),
     # Core identity — companies first, then facilities, then team
     ("companies",              f"company_id = '{DEMO_COMPANY_ID}'"),
     ("facilities",             f"company_id = '{DEMO_COMPANY_ID}'"),
