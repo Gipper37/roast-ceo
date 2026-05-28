@@ -54,6 +54,10 @@ TABLES = [
     ("plan_permissions",       "1=1"),
     ("user_roles",             "1=1"),
     ("role_permissions",       "1=1"),
+    # Global lookup catalogs — products + customers FK these.
+    # Without them the UI shows raw UUIDs in dropdowns.
+    ("customer_category",      "company_id IS NULL"),
+    ("channel",                "company_id IS NULL"),
     # Core identity — companies first, then facilities, then team
     ("companies",              f"company_id = '{DEMO_COMPANY_ID}'"),
     ("facilities",             f"company_id = '{DEMO_COMPANY_ID}'"),
