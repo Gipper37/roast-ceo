@@ -51,6 +51,10 @@ TABLES = [
     # role_permission grants from old migrations were no-ops, and
     # every gated feature denied for everyone.
     ("subscription_plans",     "1=1"),
+    # permissions catalog MUST come before any *_permissions table
+    # so the canAs() catalog lookup finds the perm_id and doesn't
+    # silently deny every action. Staging started with only 13 perms.
+    ("permissions",            "1=1"),
     ("plan_permissions",       "1=1"),
     ("user_roles",             "1=1"),
     ("role_permissions",       "1=1"),
