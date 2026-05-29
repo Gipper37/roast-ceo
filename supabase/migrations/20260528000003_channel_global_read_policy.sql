@@ -15,6 +15,18 @@
 -- read NULL-scoped rows, writes still require tenant ownership.
 -- ============================================================
 
-CREATE POLICY catalog_read_global ON public.channel
-  FOR SELECT TO authenticated
-  USING (company_id IS NULL);
+-- Idempotent: the policy was applied directly to prod when the
+-- UUID-in-channel-dropdown bug was first surfaced, before this
+-- migration existed. Guard the CREATE so re-running on prod is a no-op.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_policy
+    WHERE polname = 'catalog_read_global'
+      AND polrelid = 'public.channel'::regclass
+  ) THEN
+    CREATE POLICY catalog_read_global ON public.channel
+      FOR SELECT TO authenticated
+      USING (company_id IS NULL);
+  END IF;
+END $$;
