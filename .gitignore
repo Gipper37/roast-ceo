@@ -35,3 +35,7 @@ snapshot_pre_migration.csv
 .env
 .env.*
 !.env.example
+
+# MCR invoice import generated artifacts
+scripts/mcr_invoices.sql
+scripts/mcr_invoices.log
