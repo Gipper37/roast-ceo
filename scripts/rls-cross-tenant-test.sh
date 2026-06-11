@@ -69,11 +69,19 @@ BEGIN
       -- USING expression does NOT reference an auth_* helper. Such
       -- policies are by definition independent of the current user
       -- and won't leak per-tenant data based on identity.
-      EXISTS (
-        SELECT 1 FROM pg_policy p
-        WHERE p.polrelid = c.oid
-          AND p.polcmd IN ('r', '*')
-          AND pg_get_expr(p.polqual, c.oid) NOT LIKE '%auth_%'
+      (
+        EXISTS (
+          SELECT 1 FROM pg_policy p
+          WHERE p.polrelid = c.oid
+            AND p.polcmd IN ('r', '*')
+            AND pg_get_expr(p.polqual, c.oid) NOT LIKE '%auth_%'
+        )
+        -- Explicit catalog allowlist. These are intentionally global tables
+        -- (every row has company_id IS NULL) whose global-read policy is
+        -- written as "(company_id IS NULL OR company_id IN auth_company_ids())".
+        -- The OR'd tenant clause trips the auth_ heuristic above, so they must
+        -- be named here. supplier_category went global in 20260609000003.
+        OR c.relname = ANY (ARRAY['supplier_category'])
       ) AS is_catalog
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
