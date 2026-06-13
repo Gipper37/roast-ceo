@@ -326,10 +326,11 @@ def emit_sql():
             qty = abs(qf) if qf != 0 else 1
             odid = "mcrimp-od-" + hashlib.md5((oid + str(i)).encode()).hexdigest()[:16]
             prep = PREP.get(matches.get(it, {}).get("coffee_prep"))
-            odrows.append(f"({S(odid)},{S(oid)},{S(pid)},{Nn(qty)},{S(prep)},{S(CO)},{S(FAC)},{S(odate)},{S(cid)},{S(MARK)})")
+            odrows.append(f"({S(odid)},{S(oid)},{S(pid)},{Nn(qty)},{S(prep)},'Delivered',{S(CO)},{S(FAC)},{S(odate)},{S(cid)},{S(MARK)})")
             od_updates.append((odid, round(a, 4)))
     out.append("\n-- 5a. ORDERS"); out += batch("orders", ["order_id","customer_id","order_date","order_status","order_notes","company_id","facility_id","created_by"], orows, "order_id", chunk=500)
-    out.append("\n-- 5b. ORDER_DETAILS"); out += batch("order_details", ["order_detail_id","order_id","product_id","quantity","coffee_prep","company_id","facility_id","order_date","customer_id","created_by"], odrows, "order_detail_id", chunk=400)
+    # item_status='Delivered' (these are historical delivered orders) — else lines default to 'Open' and clog the Pack Queue
+    out.append("\n-- 5b. ORDER_DETAILS"); out += batch("order_details", ["order_detail_id","order_id","product_id","quantity","coffee_prep","item_status","company_id","facility_id","order_date","customer_id","created_by"], odrows, "order_detail_id", chunk=400)
 
     # 6. historical line prices (QB amounts, signed)
     out.append("\n-- 6. historical line prices (QB amounts, signed)")
