@@ -33,7 +33,9 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned (was `latest`): newer CLI's platform auth rejects our token at
+          # `supabase link`. Pin to known-good; bump after token re-issue.
+          version: 2.75.0
 
       - name: Link staging project
         run: |

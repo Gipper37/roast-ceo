@@ -31,7 +31,11 @@ jobs:
 
       - uses: supabase/setup-cli@v1
         with:
-          version: latest
+          # Pinned: `latest` auto-upgraded to a CLI (>=2.10x) whose new platform
+          # auth rejects our existing access token at `supabase link`
+          # (401 Unauthorized). Pin to a known-good version. Bump deliberately
+          # after regenerating the token under Supabase's new platform auth.
+          version: 2.75.0
 
       - name: Link prod project
         run: |
