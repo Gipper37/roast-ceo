@@ -1,9 +1,8 @@
 -- Borrow, part 1 — the in-roast deduct (write-side). A roast can consume a lot
 -- whose HOME is another group; that lot is what deducts, so its home group loses
 -- stock + gains reorder need (per the single-planning-home model). Replay safety
--- (recompute rework) is part 2 — until it lands, edits/shipment-receipts on a
--- facility that has borrows must be handled by part 2's facility-wide rebuild.
--- See memory/project_lot_home_inventory.md.
+-- (recompute + dispatch trigger made borrow-aware) is part 2 (migration
+-- ...000005); both deploy together. See memory/project_lot_home_inventory.md.
 
 -- The explicitly-borrowed lot for a roast (single-origin/post-blend). NULL = no
 -- borrow (normal FIFO within the recipe's group).
