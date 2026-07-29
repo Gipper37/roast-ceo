@@ -96,6 +96,17 @@ commit;
 -- before its invoices are judged.
 do $$
 BEGIN
+  -- pg_cron is installed on prod but NOT on staging (free tier). Referencing cron.*
+  -- unconditionally fails the whole migration there with
+  -- `schema "cron" does not exist`, which would leave staging without the FUNCTIONS
+  -- either — so the schema check guards the schedule, and the functions above land
+  -- everywhere regardless. The statements below are never parsed when the branch is
+  -- not taken, which is what makes this safe on a database with no cron schema.
+  IF NOT EXISTS (SELECT 1 FROM pg_namespace WHERE nspname = 'cron') THEN
+    RAISE NOTICE 'pg_cron not installed — functions created, schedule skipped. Schedule manually where cron exists.';
+    RETURN;
+  END IF;
+
   -- Idempotent: drop any existing job of this name before scheduling, rather than
   -- relying on cron.schedule to upsert by name (version-dependent).
   PERFORM cron.unschedule('recompute_overdue_invoices')
