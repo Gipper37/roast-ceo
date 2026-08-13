@@ -1,0 +1,31 @@
+supplier	mcr-sup-monin---inv-i25	Monin - INV I25
+supplier	mcr-sup-monin---inv-i26	Monin - INV I26
+consumable_inventory	cons_ce5cb1dc9d4df487	mcr-sup-monin---inv-i25 | Monin Lychee
+consumable_inventory	cons_23eca31cf45d78eb	mcr-sup-monin---inv-i26 | Monin Toasted Coconut
+consumable_inventory	cons_9f5a966e75ff92f8	mcr-sup-monin---inv-i26 | Monin Lavendar
+consumable_inventory	cons_f0e92246b3b5840e	mcr-sup-monin---inv-i25 | Monin Coconut
+consumable_inventory	cons_12e35025493dedf2	mcr-sup-monin---inv-i26 | Monin Caramel
+consumable_inventory	cons_5645c1654fd679cb	mcr-sup-monin---inv-i26 | Monin Vanilla Crème
+consumable_inventory	cons_0a22ec5e1241b32e	mcr-sup-monin---inv-i26 | Monin Vanilla
+consumable_inventory	cons_21e852a124c38f5b	mcr-sup-monin---inv-i25 | Monin Hibiscus
+consumable_inventory	cons_443bb82c7f671064	mcr-sup-monin---inv-i26 | Monin Blueberry
+consumable_inventory	cons_fe8373862bb86f36	mcr-sup-monin---inv-i26 | Monin Watermelon
+consumable_inventory	cons_2317692b977ca244	mcr-sup-monin---inv-i26 | Monin Rose
+consumable_inventory	cons_f078adbc6749b29a	mcr-sup-monin---inv-i26 | Monin Elderflower
+consumable_inventory	cons_571643ea8b27e444	mcr-sup-monin---inv-i26 | Monin Basil Concentrate Flavor
+consumable_inventory	cons_a2ada01695e53236	mcr-sup-monin---inv-i26 | Monin Blood Orange
+consumable_inventory	cons_e5cff3ce8154a1c8	mcr-sup-monin---inv-i25 | Monin SF M-AS009A Sugar Free Caramel 750mL
+consumable_inventory	cons_6fcd68bddd0cc8ba	mcr-sup-monin---inv-i26 | Monin SF M-AS045A Sugar Free Vanilla 750mL
+consumable_inventory	cons_e3956e2ad5de2ae3	mcr-sup-monin---inv-i25 | Monin Ube
+consumable_inventory	cons_e33d8d7c290403b7	mcr-sup-monin---inv-i25 | Monin Raspeberry
+consumable_inventory	cons_b69d2e24130c4ce3	mcr-sup-monin---inv-i26 | Monin Pistachio
+consumable_inventory	cons_9cc08a390c6f9fd4	mcr-sup-monin---inv-i26 | Monin Toasted Marsh
+consumable_inventory	cons_60f47a89c1b6258d	mcr-sup-monin---inv-i26 | Monin Macnut
+consumable_inventory	cons_25ecc8e8c7fc8d0d	mcr-sup-monin---inv-i26 | Monin Ginger
+consumable_inventory	cons_0e7dc2aa59104a52	mcr-sup-monin---inv-i26 | Monin Grapefruit
+consumable_inventory	cons_0a3d2c190e9fda5d	mcr-sup-monin---inv-i26 | Monin Cucumber
+consumable_inventory	cons_5b19ae609649d61c	mcr-sup-monin---inv-i25 | Monin Toffee Nut
+consumable_inventory	cons_a51949a0726f7fb3	mcr-sup-monin---inv-i25 | Monin Salted Caramel
+consumable_inventory	cons_e2390001e3d85d5f	mcr-sup-monin---inv-i26 | Monin Honey
+shipment_received	mcr-ship-monin---inv-i25-353834	mcr-sup-monin---inv-i25
+shipment_received	mcr-ship-monin---inv-i26-058560	mcr-sup-monin---inv-i26
