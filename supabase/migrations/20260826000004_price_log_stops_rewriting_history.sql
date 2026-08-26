@@ -41,26 +41,11 @@
 --      so a single posted invoice made repricing impossible. Now they are simply
 --      excluded, and posting means what it says.
 --
--- REMOVED, not fixed: the facility filter, in both the window lookup and the
--- UPDATE. It could never do any work. products.facility_id already pins a
--- product to exactly one facility, so `od.product_id = NEW.product_id` has
--- already constrained the facility before the clause is reached. Verified on
--- prod: of 865 price entries, all 851 that name a facility name their own
--- product's and none disagree; and of 36,891 order lines across all five
--- tenants, ZERO are cross-facility.
---
--- Two earlier attempts at "fixing" it were both worse than deleting it.
--- Matching NULL-to-NULL matched nothing, because every order carries a
--- facility_id. Deriving the facility from the product compared the order's
--- HISTORICAL facility against the product's CURRENT one, so moving a product
--- between facilities would have silently stopped every historical correction
--- for it -- a redundant clause traded for a latent one.
---
--- In the window lookup the same redundancy was not merely inert, it was a bug:
--- NULL-to-NULL matching meant a facility-less entry could not see a SCOPED
--- entry as its window end, so its validity window ran past a later price
--- change. Exactly one product in the database hits it, and its older entry is
--- priced 0.00 and early-returns, so nothing was miscalculated in practice.
+-- NOT changed: the facility filter, which was reported as an asymmetric-NULL bug
+-- and is not one. `NEW.facility_id IS NULL OR o.facility_id = NEW.facility_id`
+-- correctly means "a company-wide price applies at every facility". Rewriting it
+-- to match NULL-to-NULL broke the feature in rehearsal: all 3,806 MCR orders
+-- carry a facility_id, so no correction applied at all.
 --
 -- What still works, deliberately: correcting a live, unposted, non-legacy order
 -- when a price was genuinely recorded wrong. That is the legitimate use of a
@@ -82,14 +67,16 @@ BEGIN
     END IF;
 
     -- Find the end of this entry's validity window:
-    -- the date_updated of the next price log entry for this product.
-    -- Scoped by PRODUCT only -- see the header note on why facility cannot
-    -- narrow anything a product_id match has not already narrowed.
+    -- the date_updated of the next price log entry for this product+facility.
     SELECT MIN(ppl.date_updated) INTO v_date_end
     FROM public.products_price_log ppl
     WHERE ppl.product_id    = NEW.product_id
       AND ppl.price_log_id <> NEW.price_log_id
-      AND ppl.date_updated  > NEW.date_updated;
+      AND ppl.date_updated  > NEW.date_updated
+      AND (
+          (NEW.facility_id IS NULL AND ppl.facility_id IS NULL)
+          OR ppl.facility_id = NEW.facility_id
+      );
 
     -- Update total_price for eligible orders in this price's validity window.
     UPDATE public.order_details od
@@ -102,7 +89,8 @@ BEGIN
            END
     FROM   public.orders o
            LEFT JOIN LATERAL (
-               SELECT p2.product_type FROM public.products p2
+               SELECT p2.product_type, p2.facility_id
+               FROM public.products p2
                WHERE p2.product_id = NEW.product_id
            ) prod ON true
            LEFT JOIN public.product_type pt
@@ -112,6 +100,19 @@ BEGIN
       AND  o.order_status <> 'Canceled'
       AND  o.order_date   >= NEW.date_updated
       AND  (v_date_end IS NULL OR o.order_date < v_date_end)
+      -- Facility. Prices are PER FACILITY, as products are, so a price entry
+      -- can never legitimately apply company-wide. When the entry does not name
+      -- a facility, fall back to the FACILITY OF THE PRODUCT BEING REPRICED
+      -- rather than to "everywhere" -- a product belongs to exactly one
+      -- facility, so its facility IS the price's facility, and deriving it here
+      -- means the app cannot forget to send it.
+      --
+      -- It could, and did: none of addPriceEntry, bulkUpdatePrices or the
+      -- variant-create path sets facility_id, so all 14 app-created entries on
+      -- prod are NULL against 851 scoped ones from the importer. Under the old
+      -- `NEW.facility_id IS NULL OR ...` those 14 disabled the filter entirely
+      -- and applied at every facility.
+      AND  o.facility_id = COALESCE(NEW.facility_id, prod.facility_id)
       AND  COALESCE(od.quantity, 0) > 0
       -- The four guards.
       AND  NOT COALESCE(o.is_legacy_import, false)
