@@ -6,8 +6,16 @@
 -- $52.15 — owed $11,122.51 against $11,070.36 collected. The owner has decided
 -- to close it by grossing up, the way the retail rate already does.
 --
--- Grossed up, 0.5% becomes 0.5/99.5 = 0.502513%. Charge that and the arithmetic
--- closes exactly, the same way it does at retail:
+-- The rule is simply: 0.5% OF THE GROSS. Because the gross includes the tax
+-- itself, solving for it gives 0.5/99.5 = 0.502513% of the subtotal — the same
+-- number reached from the other side, not a different rate:
+--
+--     0.502513% of $1,000.00 subtotal  = $5.03
+--     0.5%      of $1,005.03 gross     = $5.03
+--
+-- The stored figure is the statutory 0.5% with gross_up set, and charge_rate is
+-- derived. The label says "on the gross" rather than quoting 0.5025%, because
+-- the operator should read the rule and not the algebra.
 --
 --     base  $1,000.00 x 0.502513%    = $5.03 charged
 --     gross $1,000.00 + $5.03        = $1,005.03
@@ -39,7 +47,7 @@ insert into public.tax_rate
   (tax_rate_id, company_id, jurisdiction_id, code, label,
    statutory_rate, gross_up, kind, requires_resale_cert, filing_class, effective_from)
 select 'mcr-hi-wholesale-gu', '9ShiyDAXhV', t.jurisdiction_id, 'GET_WHOLESALE_GU',
-       'GET wholesale 0.5% (passed on at 0.5025%)',
+       'GET wholesale 0.5% on the gross',
        0.005, true, 'reduced', true, 'wholesaling', current_date + 1
   from public.tax_rate t
  where t.tax_rate_id = 'mcr-hi-wholesale'
