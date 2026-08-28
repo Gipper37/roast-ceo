@@ -1,0 +1,13 @@
+ORDER	mcrimp-ord-0a8ac3104ab84117	mcrimp-cust-0278493f014220	Cinnamon Roll Place	2026-02-18	Delivered	0.0	9ShiyDAXhV	5cc581b9-2803-42c2-98de-0ba16ae42f8e
+ORDER	mcrimp-ord-ce9c7c45bc6dc5cc	mcrimp-cust-ab9e9c031674ef	My Titas Cafe	2026-02-19	Delivered	0.0	9ShiyDAXhV	5cc581b9-2803-42c2-98de-0ba16ae42f8e
+LINE	mcrimp-od-00511dd706044b05	mcrimp-ord-ce9c7c45bc6dc5cc	mcrimp-prod-06387240ef0e0924	Bag 375-400	1	0.6		
+LINE	mcrimp-od-0475605647ea51d8	mcrimp-ord-0a8ac3104ab84117	mcrimp-prod-bc85a7727f0cb8c9	Service Fee	1	0.0		
+LINE	mcrimp-od-293ad274de876b00	mcrimp-ord-0a8ac3104ab84117	mcrimp-prod-94a585aae1adcd4d	Sales Discount	1	-1.5		
+LINE	mcrimp-od-3a499fd0e246e422	mcrimp-ord-ce9c7c45bc6dc5cc	mcrimp-prod-4602804f756e40b9	Bag 375-300	1	0.3		
+LINE	mcrimp-od-524946d137c5d9ec	mcrimp-ord-0a8ac3104ab84117	mcrimp-prod-dc3bcec985cba0e8	Kona Blend Light - 1lb - Wholesale	1	15.0		
+LINE	mcrimp-od-5efccb2d96320103	mcrimp-ord-ce9c7c45bc6dc5cc	prod_303e39eb67f62195	Pacific Blend - 5lbs - Wholesale	1	73.75	Whole Bean	
+LINE	mcrimp-od-8072cb753a09a48c	mcrimp-ord-0a8ac3104ab84117	mcrimp-prod-bc85a7727f0cb8c9	Service Fee	1	0.0		
+LINE	mcrimp-od-b1e4c0ed70c1c14b	mcrimp-ord-0a8ac3104ab84117	mcrimp-prod-bc85a7727f0cb8c9	Service Fee	1	0.0		
+LINE	mcrimp-od-c4aef1259f47a952	mcrimp-ord-0a8ac3104ab84117	prod_7f2e9f4144f65c66	French Roast - 1lb - Wholesale	1	12.65		
+LINE	mcrimp-od-ef3bc48f7b818ebd	mcrimp-ord-ce9c7c45bc6dc5cc	prod_dc95468b6bfeb417	Maui Red Bag - 8oz - Wholesale	1	0		
+LINE	mcrimp-od-fc22cd31895231b4	mcrimp-ord-ce9c7c45bc6dc5cc	prod_50c96bcd6fa3c1fe	Pacific Blend - 8oz - Wholesale	1	7.38		
