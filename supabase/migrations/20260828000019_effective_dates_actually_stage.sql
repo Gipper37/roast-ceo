@@ -12,7 +12,7 @@
 --   2. propagation skips future-dated entries at insert (nothing to rewrite
 --      yet). A staged entry still correctly ENDS the window of the current
 --      price — orders dated on/after the staged date are left for it.
---   3. a daily pg_cron touch re-fires both triggers for entries that just came
+--   3. an hourly pg_cron touch re-fires both triggers for entries that came
 --      due (with a 3-day catch-up, and both functions are idempotent absolute
 --      derivations, so a double touch is harmless). No new state to track.
 --
@@ -28,8 +28,29 @@ AS $function$
 DECLARE
     v_product_id   text;
     v_latest_price numeric;
+    v_today        date;
 BEGIN
     v_product_id := CASE WHEN TG_OP = 'DELETE' THEN OLD.product_id ELSE NEW.product_id END;
+
+    -- "Today" is the FACILITY's today, not the server's. The DB runs UTC,
+    -- which is tomorrow from 2pm in Hawaii — a UTC bound would put a staged
+    -- price live ten hours early, while the editor still said "staged"
+    -- (review P2). Facilities without a timezone fall back to UTC.
+    SELECT (now() AT TIME ZONE COALESCE(f.time_zone, 'UTC'))::date
+    INTO   v_today
+    FROM   public.products p
+    LEFT   JOIN public.facilities f ON f.facility_id = p.facility_id
+    WHERE  p.product_id = v_product_id;
+    v_today := COALESCE(v_today, current_date);
+
+    -- Deleting a STAGED entry (still in the future) can never move the live
+    -- price: it never contributed to it. Without this, deleting the only log
+    -- entry — a staged one on a product with an otherwise empty log, which is
+    -- most of the catalogue — erased the price customers pay today
+    -- (review P1).
+    IF TG_OP = 'DELETE' AND OLD.date_updated > v_today THEN
+        RETURN OLD;
+    END IF;
 
     -- The LIVE price is the latest entry whose effective date has arrived.
     -- Without the date bound, a price staged for next month went live today.
@@ -37,7 +58,7 @@ BEGIN
     FROM public.products_price_log
     WHERE product_id = v_product_id
       AND price > 0
-      AND date_updated <= current_date
+      AND date_updated <= v_today
     ORDER BY date_updated DESC
     LIMIT 1;
 
@@ -70,6 +91,7 @@ AS $function$
 DECLARE
     v_date_end date;
     v_reduces  boolean;
+    v_today    date;
 BEGIN
     -- Skip zero/null prices — can't fix orders with no price information
     IF NEW.price IS NULL OR NEW.price = 0 THEN
@@ -77,9 +99,15 @@ BEGIN
     END IF;
 
     -- A future-dated entry is STAGED, not live: there is nothing to rewrite
-    -- yet. The daily cron touches the row when its date arrives and this
-    -- trigger runs again, then against real orders in its window.
-    IF NEW.date_updated > current_date THEN
+    -- yet. The hourly cron touches the row when its date arrives and this
+    -- trigger runs again, then against real orders in its window. "Future" is
+    -- judged in the FACILITY's timezone, same as the sync trigger.
+    SELECT (now() AT TIME ZONE COALESCE(f.time_zone, 'UTC'))::date
+    INTO   v_today
+    FROM   public.products p
+    LEFT   JOIN public.facilities f ON f.facility_id = p.facility_id
+    WHERE  p.product_id = NEW.product_id;
+    IF NEW.date_updated > COALESCE(v_today, current_date) THEN
         RETURN NEW;
     END IF;
 
@@ -162,13 +190,19 @@ BEGIN
   PERFORM cron.unschedule('apply_due_price_log')
     WHERE EXISTS (SELECT 1 FROM cron.job WHERE jobname = 'apply_due_price_log');
 
+  -- Hourly, because "midnight" is a different UTC hour per facility timezone.
+  -- The touch is idempotent (both triggers are absolute derivations), so a row
+  -- being touched repeatedly across its 3-day catch-up window is harmless.
   PERFORM cron.schedule(
     'apply_due_price_log',
-    '5 0 * * *',
-    $cron$update public.products_price_log
-       set date_updated = date_updated
-     where price > 0
-       and date_updated <= current_date
-       and date_updated >  current_date - 3$cron$
+    '10 * * * *',
+    $cron$update public.products_price_log ppl
+       set date_updated = ppl.date_updated
+      from public.products p
+      left join public.facilities f on f.facility_id = p.facility_id
+     where p.product_id = ppl.product_id
+       and ppl.price > 0
+       and ppl.date_updated <= (now() at time zone coalesce(f.time_zone, 'UTC'))::date
+       and ppl.date_updated >  (now() at time zone coalesce(f.time_zone, 'UTC'))::date - 3$cron$
   );
 END $do$;
