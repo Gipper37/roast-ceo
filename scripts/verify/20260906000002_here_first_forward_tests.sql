@@ -1,7 +1,7 @@
 -- Verification for 20260906000002_here_first_lots_counts_are_truth — STAGING (demo tenant), rolled back.
 -- Run like 20260906000001_counts_anchor_forward_tests.sql. Passed 2026-09-05: (h) attach-to-unreceived keeps stock + receives order,
 -- (i) void releases the lot to the queue, (k) receipt dated after a here-first count keeps the count, (j) June-30 protection,
--- (l) duplicate question on edit + confirm, (m) dismissed lot matched, (o) atomic merge + refusal, (n) roast_detail component filter.
+-- (l) duplicate question on edit + confirm, (m) dismissed lot matched, (o) atomic merge + refusal, (n) roast_detail component filter. Round 2 adds (q) unchanged re-save + blank-lot reorder, (r) void with post-anchor roasts, (s) attach warning.
 -- Forward tests for 20260906000002 on STAGING (demo tenant), one transaction, ROLLED BACK.
 \set ON_ERROR_STOP on
 begin;
@@ -66,7 +66,7 @@ select '(l) confirmed edit went through: expect DUP' as step, lot_id from coffee
 select set_config('app.allow_duplicate_lot', '', true);
 
 -- (m) a DISMISSED lot still on hand is matched by the question
-update coffee_inventory_purchased set receipt_pending = false where origin_purchase_id = 'hf-pend-1';   -- dismissed shape: here_first, no shipment, no cost
+update coffee_inventory_purchased set receipt_pending = false, receipt_dismissed_at = now() where origin_purchase_id = 'hf-pend-1';   -- dismissed
 savepoint sp_m;
 do $$ begin
   insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, coffee_source_id, shipment_id, amount_manual)
@@ -102,6 +102,46 @@ exception when others then
   raise notice '(o) refusal as expected → %', left(sqlerrm, 70);
 end $$;
 rollback to savepoint sp_o;
+
+
+-- (q) a saved line re-asserting its UNCHANGED key must not re-ask (UPDATE OF fires even when unchanged)
+update coffee_inventory_purchased set receipt_pending = true, receipt_dismissed_at = null where origin_purchase_id = 'hf-pend-1';   -- pending again, lot DUP
+select set_config('app.allow_duplicate_lot', 'true', true);
+update coffee_inventory_purchased set lot_id = 'DUP' where origin_purchase_id = 'hf-line-1';   -- confirmed coexisting duplicate
+select set_config('app.allow_duplicate_lot', '', true);
+update coffee_inventory_purchased set lot_id = 'DUP', coffee_source_id = 'sim-src-hf' where origin_purchase_id = 'hf-line-1';   -- same key re-saved: no question
+select '(q) unchanged re-save passed: expect DUP' as step, lot_id from coffee_inventory_purchased where origin_purchase_id='hf-line-1';
+-- a blank-lot PO line for a source that has a DISMISSED lot is a normal reorder (pending only blocks blank lots)
+update coffee_inventory_purchased set receipt_pending = false, receipt_dismissed_at = now() where origin_purchase_id = 'hf-pend-1';
+insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, coffee_source_id, shipment_id, amount_manual)
+  select 'hf-line-3','sim-hf-test',fac,co,100,null,'shipment',false,'','sim-src-hf','hf-ship-2',true from _t;
+select '(q) blank-lot reorder with a dismissed lot on hand: expect 1 row (no question)' as step, count(*) from coffee_inventory_purchased where origin_purchase_id='hf-line-3';
+
+-- (r) here-first lot with roasts after its count, on a shipment that gets VOIDED: no double deduction
+insert into coffee_inventory (origin_id, origin, facility_id, company_id) select 'sim-hf2','SIM HF2',fac,co from _t;
+insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, amount_manual, created_at)
+  select 'hf2-lot','sim-hf2',fac,co,100,100,'roast_quick_add',true,'R1',true, now() - interval '5 days' from _t;   -- FIFO never charges a roast dated before the lot existed
+select record_per_lot_count(fac, co, today - 2, '[{"origin_purchase_id":"hf2-lot","counted_remaining_lbs":100}]'::jsonb, null) from _t;
+insert into roast_log (roast_log_id, company_id, facility_id, origin_id, "charged?", charge_weight, charge_weight_lbs, roast_date, roast_date_utc, created_at)
+  select 'hf2-roast', co, fac, 'sim-hf2', true, '30', 30, (today - 1) + time '10:00', ((today - 1) + time '10:00') at time zone tz, ((today - 1) + time '10:00') at time zone tz from _t;
+update roast_log set roast_date = (select (today - 1) + time '10:00' from _t), roast_date_utc = (select ((today - 1) + time '10:00') at time zone tz from _t) where roast_log_id = 'hf2-roast';
+select recompute_origin_lot_consumption('sim-hf2', fac) from _t;
+select '(r) before void: expect 70' as step, remaining_lbs from coffee_inventory_purchased where origin_purchase_id='hf2-lot';
+insert into shipment_received (shipment_id, company_id, facility_id, status, voided, order_date, date_received) select 'hf2-ship', co, fac, 'received', false, today, today - 2 from _t;
+select record_lot_receipt('hf2-lot', 3.0, null, today - 2, 0, 'hf2-ship', true, 1) from _t;
+update shipment_received set voided = true where shipment_id = 'hf2-ship';
+select recompute_origin_lot_consumption('sim-hf2', fac) from _t;
+select '(r) after void + replay: expect 70 (double deduction would give 40)' as step, remaining_lbs, receipt_pending, shipment_id from coffee_inventory_purchased where origin_purchase_id='hf2-lot';
+
+-- (s) recording INTO an order that already has a stock-less line for this coffee warns; confirm proceeds
+insert into shipment_received (shipment_id, company_id, facility_id, status, voided, order_date) select 'hf-ship-4', co, fac, 'po_sent', false, today from _t;
+insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, coffee_source_id, shipment_id, amount_manual)
+  select 'hf-line-4','sim-hf-test',fac,co,100,null,'shipment',false,'ORD1','sim-src-hf','hf-ship-4',true from _t;
+insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, coffee_source_id, amount_manual)
+  select 'hf-pend-4','sim-hf-test',fac,co,100,100,'roast_quick_add',true,'','sim-src-hf',true from _t;
+select '(s) warning: expect same_coffee_on_order' as step, (record_lot_receipt('hf-pend-4', 4.0, null, today, 0, 'hf-ship-4', false, 1))->>'warning' from _t;
+select '(s) confirmed:' as step, (record_lot_receipt('hf-pend-4', 4.0, null, today, 0, 'hf-ship-4', true, 1))->>'ok' from _t;
+select '(s) order received now: expect today' as step, date_received from shipment_received where shipment_id='hf-ship-4';
 
 -- (n) roast_detail: component-tagged counts must not double-count or leak
 insert into roast_stock_log (stock_log_id, stock_type, origin_id, facility_id, company_id, lbs_in_stock) select 'rsl-o', 'origin', 'demo-org-11', fac, co, 100 from _t;

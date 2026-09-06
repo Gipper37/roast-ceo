@@ -43,6 +43,17 @@ alter table public.coffee_inventory_purchased
 comment on column public.coffee_inventory_purchased.here_first is
   'The lot physically existed before any shipment paperwork (quick add, baseline, count-discovered). Its counts are always its truth; paperwork state never blanks it. Set on insert, never flipped.';
 
+-- Dismissing a receipt is an explicit state, not a shape ("no shipment, no
+-- cost" also describes a baseline import that was never in the queue).
+alter table public.coffee_inventory_purchased
+  add column if not exists receipt_dismissed_at timestamptz;
+comment on column public.coffee_inventory_purchased.receipt_dismissed_at is
+  'Set when the operator dismisses this lot from "Receipts to record" (last resort). Cleared by un-dismiss. The duplicate-delivery question still matches a dismissed lot by exact lot #.';
+update public.coffee_inventory_purchased
+   set receipt_dismissed_at = coalesce(updated_at, now())
+ where receipt_dismissed_at is null and updated_by = 'cleanup_pass1_20260905'
+   and not receipt_pending and shipment_id is null;
+
 create or replace function public.cip_stamp_here_first() returns trigger
 language plpgsql as $function$
 begin
@@ -182,7 +193,11 @@ BEGIN
            END
      WHERE cip.origin = p_origin_id AND cip.facility_id = p_facility_id
        AND cip.amount IS NOT NULL
-       AND (cip.shipment_id IS NULL
+       -- ── HERE-FIRST ── re-seeded from its counts whatever its paperwork
+       -- says (exempt from the blank above, so it must be re-seeded here or
+       -- the replay would take its post-anchor roasts off twice).
+       AND (cip.here_first
+          OR cip.shipment_id IS NULL
           OR EXISTS (SELECT 1 FROM public.shipment_received sr
                       WHERE sr.shipment_id = cip.shipment_id
                         AND sr.date_received IS NOT NULL
@@ -389,6 +404,14 @@ BEGIN
   IF TG_OP = 'UPDATE' AND COALESCE(OLD.receipt_pending, false) THEN
     RETURN NEW;
   END IF;
+  -- UPDATE OF fires whenever a column is in SET, changed or not: a saved
+  -- shipment re-asserts every line. Only a real change of the key asks.
+  IF TG_OP = 'UPDATE'
+     AND NEW.coffee_source_id IS NOT DISTINCT FROM OLD.coffee_source_id
+     AND lower(btrim(COALESCE(NEW.lot_id, ''))) = lower(btrim(COALESCE(OLD.lot_id, '')))
+     AND NEW.shipment_id IS NOT DISTINCT FROM OLD.shipment_id THEN
+    RETURN NEW;
+  END IF;
 
   -- Guard real recorded-shipment lots (not pending-count rows) that carry a source.
   IF NEW.entry_method = 'shipment'
@@ -402,8 +425,7 @@ BEGIN
        WHERE facility_id = NEW.facility_id
          AND coffee_source_id = NEW.coffee_source_id
          AND lower(btrim(lot_id)) = lower(btrim(NEW.lot_id))
-         AND (receipt_pending = true
-              OR (here_first AND shipment_id IS NULL AND cost_lb IS NULL))
+         AND (receipt_pending = true OR receipt_dismissed_at IS NOT NULL)
          AND origin_purchase_id <> NEW.origin_purchase_id
        LIMIT 1;
     ELSE
@@ -415,8 +437,7 @@ BEGIN
         FROM public.coffee_inventory_purchased
        WHERE facility_id = NEW.facility_id
          AND coffee_source_id = NEW.coffee_source_id
-         AND (receipt_pending = true
-              OR (here_first AND shipment_id IS NULL AND cost_lb IS NULL))
+         AND receipt_pending = true
          AND origin_purchase_id <> NEW.origin_purchase_id
        LIMIT 1;
     END IF;
@@ -424,7 +445,8 @@ BEGIN
     IF v_pending IS NOT NULL THEN
       -- Message unchanged in substance, but it now names the way out rather than
       -- presenting one reading as the only one.
-      RAISE EXCEPTION 'This coffee + lot # (%) is already on hand — in "Receipts to record", or dismissed from it. If it is the same coffee, record that receipt instead of adding a new line. If this is a separate delivery that happens to share a lot number, confirm to add it anyway.',
+      -- The frontend recognizes this refusal by the phrase 'waiting in "Receipts to record"'.
+      RAISE EXCEPTION 'This coffee + lot # (%) is already on hand and waiting in "Receipts to record" (or was dismissed from it). If it is the same coffee, record that receipt instead of adding a new line. If this is a separate delivery that happens to share a lot number, confirm to add it anyway.',
         COALESCE(NULLIF(btrim(NEW.lot_id), ''), '(no lot #)')
         USING ERRCODE = 'P0001';
     END IF;
@@ -434,7 +456,7 @@ END;
 $function$;
 drop trigger if exists trg_guard_dup_pending_receipt on public.coffee_inventory_purchased;
 create trigger trg_guard_dup_pending_receipt
-  before insert or update of coffee_source_id, lot_id, receipt_pending, entry_method, shipment_id
+  before insert or update of coffee_source_id, lot_id, receipt_pending, shipment_id
   on public.coffee_inventory_purchased
   for each row execute function public.guard_duplicate_pending_receipt();
 
@@ -482,10 +504,11 @@ begin
   -- Merging says "this coffee came from this order", so the order arrived. Date
   -- it from the lot's own count (when the roaster said it turned up), not today.
   select date_received, voided into v_ship from public.shipment_received where shipment_id = v_dup.shipment_id;
+  if coalesce(v_ship.voided, false) then raise exception 'That shipment was voided.'; end if;
   if v_ship.date_received is null then
     select coalesce(nullif(time_zone, ''), 'UTC') into v_tz from public.facilities where facility_id = v_dup.facility_id;
     select count_date into v_arrived from public.coffee_lot_count
-     where origin_purchase_id = p_keep_purchase_id order by count_at desc limit 1;
+     where origin_purchase_id = p_keep_purchase_id order by count_at asc limit 1;
     v_arrived := coalesce(v_arrived, (now() at time zone coalesce(v_tz, 'UTC'))::date);
     update public.shipment_received set date_received = v_arrived, status = 'received', updated_at = now()
      where shipment_id = v_dup.shipment_id;
@@ -613,11 +636,22 @@ begin
     -- Attaching to "not here yet" paperwork used to blank the lot's stock.
     perform 1 from public.shipment_received where shipment_id = v_ship and coalesce(voided, false) = false;
     if not found then raise exception 'that shipment was voided or does not exist'; end if;
+    -- If the order already carries a stock-less line for this coffee, this lot
+    -- is almost certainly THAT line: receiving the order would seed the line to
+    -- its amount on top of this counted lot. Steer to Combine; confirmable.
+    if not p_confirm_past_count and exists (
+         select 1 from public.coffee_inventory_purchased o
+          where o.shipment_id = v_ship and o.origin_purchase_id <> p_origin_purchase_id
+            and o.coffee_source_id is not distinct from v_lot.coffee_source_id
+            and coalesce(o.remaining_lbs, 0) = 0
+            and not exists (select 1 from public.roast_log_lot_consumption r where r.origin_purchase_id = o.origin_purchase_id)) then
+      return jsonb_build_object(
+        'warning', 'same_coffee_on_order',
+        'message', 'That order already has a line for this coffee with nothing received against it. If this is that coffee, combine it with that line instead (Edit shipment → Combine). Confirm to record it as a separate lot anyway.');
+    end if;
     update public.shipment_received
-       set date_received = coalesce(date_received, p_received_date),
-           status = case when date_received is null then 'received' else status end,
-           updated_at = now()
-     where shipment_id = v_ship;
+       set date_received = p_received_date, status = 'received', updated_at = now()
+     where shipment_id = v_ship and date_received is null;
   else
     v_ship := 'rcpt-' || substr(replace(gen_random_uuid()::text, '-', ''), 1, 18);
     insert into public.shipment_received
@@ -740,6 +774,8 @@ begin
     update public.coffee_inventory_purchased
        set shipment_id = null, receipt_pending = true, updated_at = now()
      where shipment_id = new.shipment_id and here_first;
+    -- update_shipment_on_coffee recomputes totals for the NEW (null) header only
+    perform public.calculate_shipment_totals_for(new.shipment_id, new.facility_id);
   end if;
   return null;
 end;
