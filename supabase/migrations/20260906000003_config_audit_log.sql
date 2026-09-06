@@ -114,6 +114,12 @@ begin
           and (tg_op = 'INSERT'
                or (v_new_full ->> 'updated_by') is distinct from (v_old_full ->> 'updated_by'))
          then nullif(v_new_full ->> 'updated_by', '') end,     -- stamped by THIS write
+    -- Dev-portal writes are service-role and stamp updated_by on EVERY write,
+    -- so the stamp is this write's actor even when it didn't change (the same
+    -- developer editing the same row twice). Only the JWT-less paths above
+    -- (migrations, psql) need the changed check.
+    case when v_claims ->> 'role' = 'service_role' and tg_op <> 'DELETE'
+         then nullif(v_new_full ->> 'updated_by', '') end,
     case when v_claims ->> 'role' = 'service_role' then 'service_role' end,
     'db:' || session_user                                      -- migrations / psql
   );
