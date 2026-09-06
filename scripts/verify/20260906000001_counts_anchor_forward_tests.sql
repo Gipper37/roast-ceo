@@ -68,6 +68,22 @@ insert into coffee_lot_count (origin_purchase_id, count_date, counted_remaining_
 select recompute_origin_lot_consumption('sim-anchor-test', fac) from _t;
 select '(c) ordering: L1 expect 40 (old code 70)' as step, origin_purchase_id, remaining_lbs from coffee_inventory_purchased where origin='sim-anchor-test' order by 2;
 
+-- (g) QUICK RECEIVE = a single-lot count through the RPC must only ADD the new lot: siblings unchanged,
+--     group sum = old sum + new lot. Same-day, then backdated to yesterday (its roasts replay, same result).
+delete from coffee_lot_count where origin_purchase_id like 'sim-lot-%';
+delete from roast_log where roast_log_id in ('sim-roast-C','sim-roast-D');
+delete from coffee_inventory_purchased where origin_purchase_id = 'sim-lot-3';
+select recompute_origin_lot_consumption('sim-anchor-test', fac) from _t;
+select '(g) before quick receive: L1 70, L2 100, group 170' as step, sum(remaining_lbs) as group_sum from coffee_inventory_purchased where origin='sim-anchor-test';
+insert into coffee_inventory_purchased (origin_purchase_id, origin, facility_id, company_id, amount, remaining_lbs, entry_method, receipt_pending, lot_id, created_at, amount_manual)
+  select 'sim-lot-4', 'sim-anchor-test', fac, co, 50, 50, 'roast_quick_add', true, 'L4', now(), true from _t;
+select record_per_lot_count(fac, co, today, '[{"origin_purchase_id":"sim-lot-4","counted_remaining_lbs":50}]'::jsonb, 'quick receive at the roaster') from _t;
+select '(g) same-day quick receive: expect L1 70, L2 100, L4 50 (old single-lot row: L1 100!)' as step, origin_purchase_id, remaining_lbs from coffee_inventory_purchased where origin='sim-anchor-test' order by 2;
+delete from coffee_lot_count where origin_purchase_id like 'sim-lot-%';
+select recompute_origin_lot_consumption('sim-anchor-test', fac) from _t;
+select record_per_lot_count(fac, co, today - 1, '[{"origin_purchase_id":"sim-lot-4","counted_remaining_lbs":50}]'::jsonb, 'quick receive at the roaster') from _t;
+select '(g) backdated quick receive: expect L1 70, L2 100, L4 50, group 220' as step, origin_purchase_id, remaining_lbs from coffee_inventory_purchased where origin='sim-anchor-test' order by 2;
+
 -- (f) CLOSED BOOKS: a count dated inside closed books is refused.
 update companies set books_closed_through = (select today - 1 from _t) where company_id = 'demo-aloha-coffee-roasters';
 savepoint sp_f;
