@@ -33,3 +33,12 @@ exception when others then
 end $$;
 rollback to savepoint sp;
 rollback;
+
+-- (4) the same developer editing the same row twice via the dev portal (service role) is credited both times
+begin;
+select set_config('request.jwt.claims', '{"role":"service_role"}', true);
+select plan_id, permission_id into temp _pp from plan_permissions limit 1;
+update plan_permissions p set granted = not granted, updated_by = 'dev@strata' from _pp where p.plan_id=_pp.plan_id and p.permission_id=_pp.permission_id;
+update plan_permissions p set granted = not granted, updated_by = 'dev@strata' from _pp where p.plan_id=_pp.plan_id and p.permission_id=_pp.permission_id;   -- same dev, same row, again
+select 'same dev twice: expect dev@strata on BOTH rows' as step, changed_by, changed_columns from config_audit_log order by id desc limit 2;
+rollback;
