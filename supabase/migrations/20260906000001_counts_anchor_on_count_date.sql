@@ -35,11 +35,19 @@
 -- One INSERT → the statement trigger replays each origin once. A count dated
 -- inside closed books is refused.
 --
+-- The per-lot receipt guard also changes shape: a shipment lot's count must
+-- be DATED on/after the receipt day (local calendar dates — the old
+-- `date_received::timestamptz` pinned the receipt at UTC midnight, 2pm the
+-- previous day in Hawaii); a baseline lot keeps entry-order (count written
+-- after the row) so a creation count carrying an as-of date just before the
+-- row was written still counts. The uncounted-lot fallback compares
+-- facility-local dates too (its UTC cast zeroed same-day deliveries after
+-- 2pm HST; 46% of MCR counts are entered after 2pm).
+--
 -- Measured on prod 2026-09-05: 50 backdated rows exist (all MCR, all
--- 2026-06-24); none changes which count wins its lot and none has roasts in
--- its gap, so no existing count replays differently — forward-only on
--- current data. Rehearsed on prod in a rolled-back transaction with per-origin
--- ledger + stock hashes before/after: identical (see pass-3 record).
+-- 2026-06-24); none has roasts in its gap. Rehearsed on prod in a rolled-back
+-- transaction with per-origin ledger + stock hashes before/after: identical
+-- (see pass-3 record).
 
 begin;
 
@@ -69,6 +77,13 @@ BEGIN
     SELECT COALESCE(NULLIF(time_zone, ''), 'UTC') INTO v_tz
       FROM public.facilities WHERE facility_id = p_facility_id;
     v_tz := COALESCE(v_tz, 'UTC');
+    -- AT TIME ZONE v_tz is evaluated unconditionally below; an unrecognized
+    -- facility time_zone must degrade to UTC, never fail every replay.
+    BEGIN
+        PERFORM now() AT TIME ZONE v_tz;
+    EXCEPTION WHEN OTHERS THEN
+        v_tz := 'UTC';
+    END;
 
     -- ── COUNT-DATE ANCHOR (D1) ── the group anchor is the latest EFFECTIVE
     -- anchor: a count claims its own day. Entered same-day that is count_at
@@ -119,21 +134,24 @@ BEGIN
               (SELECT clc.counted_remaining_lbs
                  FROM public.coffee_lot_count clc
                 WHERE clc.origin_purchase_id = cip.origin_purchase_id
-                  -- ── COUNT-DATE ANCHOR (D2) ── judged and ordered by the
-                  -- EFFECTIVE anchor (the count's claimed moment): a count
-                  -- backdated to before the receipt is excluded, and
-                  -- latest-count-wins means latest-DATED.
-                  AND LEAST(clc.count_at, ((clc.count_date + 1)::timestamp AT TIME ZONE v_tz)) >= COALESCE(
-                        (SELECT sr.date_received::timestamptz
-                           FROM public.shipment_received sr WHERE sr.shipment_id = cip.shipment_id),
-                        cip.created_at)
+                  -- ── COUNT-DATE ANCHOR (D2) ── the receipt guard judges the
+                  -- count's CLAIM: for a shipment lot the counted day must be on
+                  -- or after the receipt day (local calendar dates — no more UTC
+                  -- midnight = 2pm-yesterday HST); a baseline lot has no receipt,
+                  -- so entry order decides as before (its creation count may
+                  -- carry an as-of date just before the row was written).
+                  -- Ordering: latest-count-wins means latest-DATED.
+                  AND COALESCE(
+                        clc.count_date >= (SELECT sr.date_received
+                                             FROM public.shipment_received sr WHERE sr.shipment_id = cip.shipment_id),
+                        clc.count_at >= cip.created_at)
                 ORDER BY LEAST(clc.count_at, ((clc.count_date + 1)::timestamp AT TIME ZONE v_tz)) DESC, clc.created_at DESC LIMIT 1),
               -- fallback: received ON/AFTER the group's last count → fresh stock
               -- (full amount); strictly earlier uncounted lots stay 0 (assumed
               -- captured by that comprehensive count).
               CASE WHEN COALESCE(
                      (SELECT sr.date_received FROM public.shipment_received sr WHERE sr.shipment_id = cip.shipment_id),
-                     cip.created_at::date) >= v_last_count_at::date
+                     (cip.created_at AT TIME ZONE v_tz)::date) >= (v_last_count_at AT TIME ZONE v_tz)::date
                    THEN cip.amount ELSE 0 END
             )
            END
@@ -357,6 +375,16 @@ begin
   select coalesce(nullif(time_zone, ''), 'UTC') into v_tz
     from public.facilities where facility_id = p_facility_id;
   v_tz := coalesce(v_tz, 'UTC');
+  begin
+    perform now() at time zone v_tz;
+  exception when others then
+    v_tz := 'UTC';
+  end;
+
+  if exists (select 1 from jsonb_to_recordset(p_updates) as u(origin_purchase_id text, counted_remaining_lbs numeric)
+              where u.counted_remaining_lbs is null) then
+    raise exception 'Every counted lot needs a number.';
+  end if;
 
   -- The same effective anchor the replay derives (Part 1).
   v_anchor := least(now(), ((p_count_date + 1)::timestamp at time zone v_tz));

@@ -1,7 +1,3 @@
--- Verification for 20260906000001_counts_anchor_on_count_date — STAGING (demo tenant), rolled back.
--- Run: PGPASSWORD=$(security find-generic-password -s supabase-staging-db-pw -w) psql "<staging pooler url>" -f scripts/verify/20260906000001_counts_anchor_forward_tests.sql
--- Each scenario prints its expectation; (a) 50, (e) 50/90, (d) 50, (b) 30, (c) 40, (f) refused. Passed 2026-09-05.
--- Note: after 14:00 facility-local, running (d) AFTER a same-day count reproduces the pre-existing UTC-cast fallback defect (pass-3 #2) — hence its position.
 -- Synthetic forward tests for 20260906000001 on STAGING (demo tenant), all in
 -- one transaction that is ROLLED BACK. Times are facility-local (HST).
 \set ON_ERROR_STOP on
