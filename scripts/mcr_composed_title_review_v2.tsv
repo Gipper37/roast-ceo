@@ -1,0 +1,81 @@
+coffee_source_id	original_name	country	region	grade_label	process	is_decaf	varietals	name_override	composed_title	final_title
+csrc_e6cac7ee284067a7	Brazil Mogiana	Brazil	Mogiana			f			Brazil Mogiana	Brazil Mogiana
+csrc_5de796c028876030	Brazil Mogiana 15/16	Brazil	Mogiana	15/16		f			Brazil Mogiana 15/16	Brazil Mogiana 15/16
+csrc_d7988f5e334bbb0f	Brazil Mogiana 15/17	Brazil	Mogiana	15/17		f			Brazil Mogiana 15/17	Brazil Mogiana 15/17
+csrc_81f73985aac71db7	Brazil Mogiana 17/18	Brazil	Mogiana	17/18		f			Brazil Mogiana 17/18	Brazil Mogiana 17/18
+csrc_7d11bddf8db2e72d	Brazil Sul De Minas	Brazil	Sul de Minas			f			Brazil Sul de Minas	Brazil Sul de Minas
+csrc_23753f1ab6d3f9c9	Decaf Brazil (FLAVOR)	Brazil				t			Brazil Decaf	Brazil Decaf
+csrc_0a84d7ad205487c5	Colombia Excelso	Colombia		Excelso		f			Colombia Excelso	Colombia Excelso
+csrc_e59e36a550ac6cfe	Colombia Hulia Supremo	Colombia	Huila	Supremo		f			Colombia Huila Supremo	Colombia Huila Supremo
+csrc_a62b479c16f3a46f	Colombia Medelin Excelso	Colombia	Medellin	Excelso		f			Colombia Medellin Excelso	Colombia Medellin Excelso
+csrc_1619c377f98171c9	Colombia Supremo	Colombia		Supremo		f			Colombia Supremo	Colombia Supremo
+csrc_241e8bed4968e9f0	Colombian Gesha	Colombia				f	Gesha	Colombia Gesha	Colombia	Colombia Gesha
+csrc_058f4808fbf5f03e	Decaf Colombia (DECAF BLENDS)	Colombia				t			Colombia Decaf	Colombia Decaf
+csrc_51dc895c7e973ba2	Organic Colombia	Colombia				f			Colombia	Colombia
+csrc_c66f57af57b8205f	Costa Rica Tarrazu	Costa Rica	Tarrazu			f			Costa Rica Tarrazu	Costa Rica Tarrazu
+csrc_167feec140bf4ccc	Decaf Mexico Esmeralda	Mexico	Esmeralda			t			Mexico Esmeralda Decaf	Mexico Esmeralda Decaf
+798a628f-d9d0-42ea-ba65-77629775a8d3	Mexico Decaf	Mexico				t			Mexico Decaf	Mexico Decaf
+csrc_c8bfd38d18d2a86b	Mexico Veracruz	Mexico	Veracruz			f			Mexico Veracruz	Mexico Veracruz
+csrc_211af3db661e89ed	Organic Mexico	Mexico				f			Mexico	Mexico
+csrc_214aa09f8d6df8d9	El Salvador	El Salvador				f			El Salvador	El Salvador
+15c8cf88-62f9-4dbf-8d3a-eae6854e1c14	El Salvador Everest	El Salvador	Everest			f			El Salvador Everest	El Salvador Everest
+csrc_254a56c3c710f2c2	Guatemala SHB	Guatemala		SHB		f			Guatemala SHB	Guatemala SHB
+csrc_f48911ac42eb8b84	Honduras Calan	Honduras	Calan			f			Honduras Calan	Honduras Calan
+csrc_2c416abfbff80f03	Honduras Comsa	Honduras	Comsa			f			Honduras Comsa	Honduras Comsa
+csrc_548695e94eeac96e	Honduras Copan	Honduras	Copan			f			Honduras Copan	Honduras Copan
+csrc_fec67ce029c1abd0	Honduras Siguatepeque	Honduras	Siguatepeque			f			Honduras Siguatepeque	Honduras Siguatepeque
+csrc_e58386e99c4408e6	Organic Honduras Comsa	Honduras	Comsa			f			Honduras Comsa	Honduras Comsa
+csrc_90760e479a2af138	Organic Honduras Copan	Honduras	Copan			f			Honduras Copan	Honduras Copan
+4574235f-7e3a-4bf1-8560-0ce2619e748d	Hawaii Kona No.3	USA - Kona		#3		f			USA - Kona #3	USA - Kona #3
+csrc_b95b8329674802f0	Hawaii No.3 (Kona)	USA - Kona		#3		f			USA - Kona #3	USA - Kona #3
+csrc_e912e88bdc7bb317	Kona #3	USA - Kona		#3		f			USA - Kona #3	USA - Kona #3
+csrc_54f520e29c3c78d2	Kona Castaway Estate	USA - Kona	Castaway	Estate		f			USA - Kona Castaway Estate	USA - Kona Castaway Estate
+csrc_3983ca85110c4fa5	Kona Castaway Reserve	USA - Kona	Castaway	Reserve		f			USA - Kona Castaway Reserve	USA - Kona Castaway Reserve
+csrc_3ee355aeaa090e0d	Kona Decaf	USA - Kona				t			USA - Kona Decaf	USA - Kona Decaf
+csrc_cd00fb0683a9171d	Kona Organic	USA - Kona				f			USA - Kona	USA - Kona
+d439446a-6523-4365-b18b-3fc98fb48a57	Organic Kona	USA - Kona				f			USA - Kona	USA - Kona
+csrc_5b2aa7260e08ff80	Kona Peaberry	USA - Kona		Peaberry		f			USA - Kona Peaberry	USA - Kona Peaberry
+csrc_e2a2740c094d113c	Kona Prime 16/17	USA - Kona	Prime	16/17		f			USA - Kona Prime 16/17	USA - Kona Prime 16/17
+csrc_4952616625ead19a	Kona Prime 18/19	USA - Kona	Prime	18/19		f			USA - Kona Prime 18/19	USA - Kona Prime 18/19
+csrc_e8146f2795c12d52	Kona Prime Peaberry	USA - Kona	Prime	Peaberry		f			USA - Kona Prime Peaberry	USA - Kona Prime Peaberry
+csrc_419905aff309b85a	Ka'u #16,17,18,19	USA - Ka'u		#16-19		f			USA - Ka'u #16-19	USA - Ka'u #16-19
+csrc_b12267adaddfb9fb	Ka'u #18 Semi Washed (Honey)	USA - Ka'u		#18	Honey	f			USA - Ka'u #18 Honey	USA - Ka'u #18 Honey
+csrc_a110e005da5a37f0	Ka'u #19 Natural	USA - Ka'u		#19	Natural	f			USA - Ka'u #19 Natural	USA - Ka'u #19 Natural
+csrc_c46a36549e65eff7	Ka'u Honey	USA - Ka'u			Honey	f			USA - Ka'u Honey	USA - Ka'u Honey
+csrc_22b6cff651892be0	Ka'u Natutal # 18	USA - Ka'u		#18	Natural	f			USA - Ka'u #18 Natural	USA - Ka'u #18 Natural
+aae70ef1-a9ce-4152-a760-aabeedfd8dba	Kau 18	USA - Ka'u		#18		f			USA - Ka'u #18	USA - Ka'u #18
+4cb216bb-e7e2-4d87-bd69-9674ad39d908	Kau 18 Honey	USA - Ka'u		#18	Honey	f			USA - Ka'u #18 Honey	USA - Ka'u #18 Honey
+2d7716a7-bbc3-4dff-880c-df2679640626	Kau 19	USA - Ka'u		#19		f			USA - Ka'u #19	USA - Ka'u #19
+107396af-3b99-4c29-bf49-ecd6e8f05678	Mahi Pono h3	USA - Maui	Mahi Pono	H3		f			USA - Maui Mahi Pono H3	USA - Maui Mahi Pono H3
+csrc_a6837a97a66e2a7e	Maui H3	USA - Maui		H3		f			USA - Maui H3	USA - Maui H3
+csrc_05fece7c03fc47c7	Maui Dec Yellow 14	USA - Maui	Yellow	14		t			USA - Maui Yellow 14 Decaf	USA - Maui Yellow 14 Decaf
+csrc_44109ca9903ae026	Maui Moka 11	USA - Maui		11		f	Mokka	USA - Maui Mokka 11	USA - Maui 11	USA - Maui Mokka 11
+csrc_487d98cba93b6956	Maui Moka 14	USA - Maui		14		f	Mokka	USA - Maui Mokka 14	USA - Maui 14	USA - Maui Mokka 14
+f47482ad-0c29-41e8-a85d-132cf6a61271	Maui Mokka 11	USA - Maui		11		f	Mokka	USA - Maui Mokka 11	USA - Maui 11	USA - Maui Mokka 11
+b41d7af7-e06d-4ca5-87c8-6b3cc480ac40	Maui mokka 14	USA - Maui		14		f	Mokka	USA - Maui Mokka 14	USA - Maui 14	USA - Maui Mokka 14
+csrc_0d41704569f55641	Maui Red / Yellow Natural/Wash	USA - Maui	Red/Yellow		Natural/Washed	f			USA - Maui Red/Yellow Natural/Washed	USA - Maui Red/Yellow Natural/Washed
+csrc_ae0824323728699f	Maui Red 14	USA - Maui	Red	14		f			USA - Maui Red 14	USA - Maui Red 14
+csrc_0f87e935cf02c610	Maui Red Catuai Wash	USA - Maui	Red		Washed	f	Catuai		USA - Maui Red Washed	USA - Maui Red Washed
+csrc_e9a889b35f8b992e	Maui Red H3	USA - Maui	Red	H3		f			USA - Maui Red H3	USA - Maui Red H3
+csrc_4e30e28a5edaac06	Maui Red Natural 16	USA - Maui	Red	16	Natural	f			USA - Maui Red 16 Natural	USA - Maui Red 16 Natural
+csrc_8cac746b77fa5e30	Maui Red Peaberry	USA - Maui	Red	Peaberry		f			USA - Maui Red Peaberry	USA - Maui Red Peaberry
+a1b7c502-64c5-4d6e-98a4-9d8745e40e1a	Maui Yellow	USA - Maui	Yellow			f			USA - Maui Yellow	USA - Maui Yellow
+csrc_d11df67fcd1d3bd9	Maui Yellow 16	USA - Maui	Yellow	16		f			USA - Maui Yellow 16	USA - Maui Yellow 16
+csrc_d793c3dba1f9c7d9	Maui Yellow H3 Natural	USA - Maui	Yellow	H3	Natural	f			USA - Maui Yellow H3 Natural	USA - Maui Yellow H3 Natural
+csrc_bfd0fd07d8f36e9e	Maui Yellow Peaberry	USA - Maui	Yellow	Peaberry		f			USA - Maui Yellow Peaberry	USA - Maui Yellow Peaberry
+csrc_7c9c7f0eca21d029	Nicaragu Olomega Supreme	Nicaragua	Olomega	Supremo		f			Nicaragua Olomega Supremo	Nicaragua Olomega Supremo
+csrc_0c03c745fe7bc804	Nicaragu Robusta	Nicaragua				f	Robusta	Nicaragua Robusta	Nicaragua	Nicaragua Robusta
+53b6f685-6a2f-4dcd-b9ad-732aac9fcb12	Nicaragua Olomega	Nicaragua	Olomega			f			Nicaragua Olomega	Nicaragua Olomega
+csrc_10b5149aecee5e0d	Organic Nicaragua	Nicaragua				f			Nicaragua	Nicaragua
+csrc_209100c254f6e64d	Organic Papua New Guinea	Papua New Guinea				f			Papua New Guinea	Papua New Guinea
+csrc_c9f7cf5ed2d057ae	Organic PNG Simbu	Papua New Guinea	Simbu			f			Papua New Guinea Simbu	Papua New Guinea Simbu
+csrc_27019e3a8b1d2c6a	Papa New Guinea (not peaberry)	Papua New Guinea				f			Papua New Guinea	Papua New Guinea
+csrc_d2bed255e650be0e	Papa New Guinea Peaberry	Papua New Guinea		Peaberry		f			Papua New Guinea Peaberry	Papua New Guinea Peaberry
+csrc_1483d3f39c6ded9f	Organic Peru	Peru				f			Peru	Peru
+csrc_c8a7362b8bc1d2fc	Organic Peru Selva Andina	Peru	Selva Andina			f			Peru Selva Andina	Peru Selva Andina
+csrc_9e22c4ecd79db3bb	PERU FT-FLO/USA ORGANIC CAFE DE MUJER APROCCURMA	Peru	APROCCURMA Cafe de Mujer			f			Peru APROCCURMA Cafe de Mujer	Peru APROCCURMA Cafe de Mujer
+csrc_c3692df4e5b76f59	Peru Vida Alta	Peru	Vida Alta			f			Peru Vida Alta	Peru Vida Alta
+csrc_ce35b4d21f498f12	Sumatra	Sumatra				f			Sumatra	Sumatra
+csrc_b39931a7edd8a6e3	Sumatra Takengon & Sulawesi	Sumatra	Takengon & Sulawesi			f			Sumatra Takengon & Sulawesi	Sumatra Takengon & Sulawesi
+csrc_936ef021d0846852	Organic Timor Peaberry	Timor		Peaberry		f			Timor Peaberry	Timor Peaberry
+csrc_f9c78ea8c2cdba62	Yemen Mocca	Yemen				f	Mokka	Yemen Mokka	Yemen	Yemen Mokka

@@ -1,0 +1,45 @@
+recipe Lokelani Blend -> group e312f6b7-a862-42d8-8854-13a43e4854a4
+recipe Euro Dark -> group 6906006d-de70-4de6-8c5d-7c4c762ddb6a [MEDIUM]
+recipe Flavor -> group 5827f392-d083-4eef-8235-1dbcdf384d55
+recipe Hoala Blend -> group a65a9aec-ba8e-4da2-844a-ef89e05d85d3
+recipe French Roast -> group 76d414bf-6501-4f93-8a29-fde19368efa9
+recipe Espresso -> group 2697c180-0451-4f16-8401-7292984cb331
+recipe Club Imua -> group 1c285e1f-1eeb-4898-8833-09f51a306721
+recipe Puk Sup Blend -> group 34a49d90-5dc5-4589-87cb-b7d735be29fb
+recipe Sumatra DK -> group a73416f6-70b0-4d93-87d3-8a6369ee5af4 [MEDIUM]
+recipe Nokaoi -> group 4d12031e-c742-43e8-8f57-7f0c447068b1
+recipe Colombian Dark -> group d1a00e39-890f-4fa3-8d8a-f16e0b8d9d0e [MEDIUM]
+recipe House Blend -> group f012f063-84cf-461e-8f77-52ef60678da9
+recipe Fresh Trade -> group af7381f1-4448-4c65-8bf1-31fbd41ab6b3
+recipe SW Sup DK -> group 576988f0-f1f9-4638-8bde-4815c6df97e0
+recipe SW Sup LT -> group 0dbf5ce3-436b-4a8f-803d-34a8431a6e15
+recipe Maui Red Bag -> group 80869405-03a5-4811-8032-923bef52bf28
+recipe Maui Moka -> group 12f19a24-91f0-4015-844a-46a638620cf3
+recipe Maui Pea LT -> group 97655176-be7e-4a63-8684-ddac9206fdd0
+recipe Maui Pea DK -> group 9e3a2ff9-dfe2-4c7a-891e-238b0e8a13f7
+recipe Red Rooster -> group aec48ce1-0f16-4875-84a1-27a941833644
+recipe Yellow Cat -> group 8b97b37d-39e3-41ee-876d-dfd08d1210f2 [MEDIUM]
+recipe Espresso Decaf -> group a402cdf6-e405-4888-8355-356652733a18
+recipe Flavor Decaf -> group fce3c213-4312-4d9d-8e3b-b53b31d68272
+recipe MCR HI Blend Decaf -> group 6e182c63-9bea-41ed-879b-9fc148ede8fb
+recipe French Decaf -> group 2ceb206d-b50b-4c2b-87b1-8f83e5e7c590
+recipe Pacific Pea Blend -> group 324918dd-2603-4e3c-868b-869c25bac0f4
+recipe Pacific Blend -> group 00c8c2ad-e62b-4e43-8031-282301bd2ac3
+recipe NicBeans Kona -> group 4f311a31-dd51-4317-8eb7-79f8492c22ad
+recipe Kona Decaf -> group e2336191-b1eb-4b5a-8b8a-37910ee861ae
+recipe Kona BL Med -> group 1c90dc79-7d17-4bda-8dbe-1ba445b76ccf
+recipe Kona BL DK -> group bf224475-f792-48d0-800c-c9e886a23025
+recipe Kona BL LT -> group 8a9a0c25-5086-47ea-86c7-56a93e7e0fdc
+recipe Kona Castaway (Reserve) -> group 96c791ca-5314-4659-8438-67fa3c171aff
+recipe Kona Est DK -> group 97caa757-dda0-4079-8bee-dd00fb8fc8f6
+recipe Kona Est LT -> group 3130167e-e7eb-44e0-8929-5ec41376a2b6
+recipe Kona Pea Med -> group 59486988-61ae-4412-88ea-501f3f7b0539
+recipe MCR HI Blend -> group e05fa45b-71a6-4eed-8b88-0fde812f2f91 [MEDIUM]
+recipe Kau -> group 0046e157-d821-4fb7-8491-0ea826b96451
+recipe Mama's Espresso -> group bb4c8c13-c400-4d88-8144-b9fb3c93bff2
+recipe Nobu Espresso -> group 8fe36eff-4341-4ba5-8d24-8dd83204b776
+recipe Org Kona Bl Med -> group 3b6bd1ac-8446-4871-8245-85e3b224db59
+recipe ORG Kona BL DK -> group 1a681c64-dc73-4e5e-8892-e75c9c9edf7b
+skip dup recipe: HOALA
+============================================================
+recipes: 53  components: 85  group links: 42

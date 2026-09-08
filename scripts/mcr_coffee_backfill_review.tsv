@@ -1,0 +1,101 @@
+coffee_name	group	country	region	process	grade_label	peaberry	certs	varietals	farm	supplier	bag_size	is_active	flags
+Brazil Alta Mogiana 17/18	Brazil	Brazil	Alta Mogiana		SS FC 17/18					Royal Coffee	132	t	grade enriched from invoice
+Brazil Mogiana	Brazil	Brazil	Mogiana		SS FC					Royal Coffee	132	t	grade enriched from invoice
+Brazil Mogiana 15/16	Brazil	Brazil	Mogiana		SS FC 15/16					Royal Coffee	132	t	grade enriched from invoice
+Brazil Mogiana 15/17	Brazil	Brazil	Mogiana		SS FC					Royal Coffee	132	t	grade?:screen='15/17' invalid for Brazil; grade enriched from invoice
+Brazil Mogiana 17/18	Brazil	Brazil	Mogiana		SS FC 17/18					Royal Coffee	132	t	grade enriched from invoice
+Brazil SS FC 15/16	Brazil	Brazil			SS FC 15/16					Royal Coffee	132	t	
+Brazil Sul De Minas	Brazil	Brazil	Sul de Minas		SS FC					Royal Coffee	132	t	grade enriched from invoice
+Colombia Excelso	Colombia	Colombia			Excelso EP					Royal Coffee	132→154	t	grade enriched from invoice
+Colombia Hulia Supremo	Colombia	Colombia	Huila		Supremo EP					Royal Coffee	132→154	t	grade enriched from invoice
+Colombia Medelin Excelso	Colombia	Colombia	Medellín		Excelso EP					Royal Coffee	132→154	t	grade enriched from invoice
+Colombia Supremo	Colombia	Colombia			Supremo EP					Royal Coffee	132→154	t	grade enriched from invoice
+Colombian Gesha	Colombia	Colombia			Excelso EP			Gesha		Royal Coffee	154	t	grade enriched from invoice
+Organic Colombia	Colombia	Colombia			Excelso EP		Organic			Royal Coffee	152→154	t	grade enriched from invoice
+Costa Rica Tarrazu	Costa Rica	Costa Rica	Tarrazú		SHB					Royal Coffee	152	t	grade enriched from invoice
+Decaf Brazil (FLAVOR)	Decaf	Brazil								Royal Coffee	132	t	
+Decaf Colombia (DECAF BLENDS)	Decaf	Colombia								Royal Coffee	152→132	t	
+Decaf Mexico Esmeralda	Decaf	Mexico	Esmeralda							Royal Coffee	132	t	
+Mexico Decaf	Decaf	Mexico								Royal Coffee	132	t	
+El Salvador	El Salvador	El Salvador			SHG					Royal Coffee	152	t	grade enriched from invoice
+El Salvador Everest	El Salvador	El Salvador	Everest		SHG					Royal Coffee	132→154	t	grade enriched from invoice
+Guatemala	Guatemala	Guatemala			SHB					Royal Coffee	132→152	t	grade enriched from invoice
+Guatemala SHB	Guatemala	Guatemala			SHB					Royal Coffee	152	t	
+Honduras Calan	Honduras	Honduras	Calán		SHG					Royal Coffee	152	t	grade enriched from invoice
+Honduras Comsa	Honduras	Honduras	COMSA		SHG					Royal Coffee	152→154	t	grade enriched from invoice
+Honduras Copan	Honduras	Honduras	Copán		SHG					Royal Coffee	152	t	grade enriched from invoice
+Honduras Siguatepeque	Honduras	Honduras	Siguatepeque		SHG					Royal Coffee	152	t	grade enriched from invoice
+Organic Honduras Comsa	Honduras	Honduras	COMSA		SHG		Organic			Royal Coffee	152→154	t	grade enriched from invoice
+Organic Honduras Copan	Honduras	Honduras	Copán		SHG		Organic			Royal Coffee	152	t	grade enriched from invoice
+Ka'u #16,17,18,19	Ka'u	USA – Hawaii (Big Island)	Ka'u						Kau Coffee Mill	Kau Coffee Mill	100	t	
+Ka'u #18 Semi Washed (Honey)	Ka'u	USA – Hawaii (Big Island)	Ka'u	Semi-Washed					Kau Coffee Mill	Kau Coffee Mill	100	t	
+Ka'u #19 Natural	Ka'u	USA – Hawaii (Big Island)	Ka'u	Natural					Kau Coffee Mill	Kau Coffee Mill	100	t	
+Ka'u Honey	Ka'u	USA – Hawaii (Big Island)	Ka'u	Honey					Kau Coffee Mill	Kau Coffee Mill	100	t	
+Ka'u Natutal # 18	Ka'u	USA – Hawaii (Big Island)	Ka'u	Natural					Kau Coffee Mill	Kau Coffee Mill	100	t	typo/dup — review for merge
+Kau 18	Ka'u	USA – Hawaii (Big Island)	Ka'u								100	t	
+Kau 18 Honey	Ka'u	USA – Hawaii (Big Island)	Ka'u	Honey							100	t	
+Kau 19	Ka'u	USA – Hawaii (Big Island)	Ka'u								100	t	
+Kona Castaway Estate	Kona Castaway	USA – Hawaii (Big Island)	Kona						Aloha Hills	Aloha Hills	100	t	
+Kona Castaway Reserve	Kona Castaway	USA – Hawaii (Big Island)	Kona						Aloha Hills	Aloha Hills	100	t	
+Kona Decaf	Kona Decaf	USA – Hawaii (Big Island)	Kona						Aloha Hills	Aloha Hills	100	t	
+Hawaii Kona No.3	Kona H3	USA – Hawaii (Big Island)	Kona		H3						100	t	
+Hawaii No.3 (Kona)	Kona H3	USA – Hawaii (Big Island)	Kona		H3				Aloha Hills	Aloha Hills	100	t	
+Kona #3	Kona H3	USA – Hawaii (Big Island)	Kona		H3				Aloha Farms	Aloha Farms	100	t	
+Kona Organic	Kona Organic	USA – Hawaii (Big Island)	Kona				Organic		Aloha Hills	Aloha Hills	100	t	
+Organic Kona	Kona Organic	USA – Hawaii (Big Island)	Kona				Organic				100	t	
+kona Peaberry	Kona Peaberry	USA – Hawaii (Big Island)	Kona		Peaberry	Y			Aloha Hills	Aloha Hills	100	t	
+Kona Peaberry	Kona Peaberry	USA – Hawaii (Big Island)	Kona		Peaberry	Y			Aloha Hills	Aloha Hills	100	t	
+Kona Prime Peaberry	Kona Peaberry	USA – Hawaii (Big Island)	Kona		Prime Peaberry	Y			Aloha Hills	Aloha Hills	100	t	
+Kona Prime	Kona Prime	USA – Hawaii (Big Island)	Kona		Prime				Generations Kona	Generations Kona	100	t	
+Kona prime 16/17	Kona Prime	USA – Hawaii (Big Island)	Kona		Prime				Aloha Hills	Aloha Hills	100	t	
+Kona Prime 16/17	Kona Prime	USA – Hawaii (Big Island)	Kona		Prime				Aloha Hills	Aloha Hills	100	t	
+Kona Prime 18/19	Kona Prime	USA – Hawaii (Big Island)	Kona		Prime				Aloha Hills	Aloha Hills	100	t	
+Maui Mokka 11	Maui	USA – Maui	Maui					Mokka			100	t	
+Maui mokka 14	Maui	USA – Maui	Maui					Mokka			100	t	
+Maui Red / Yellow Natural/Wash	Maui	USA – Maui	Maui	Natural					Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Dec Yellow 14	Maui Decaf	USA – Maui	Maui						Kona Coffee Company	Kona Coffee Company	100	t	
+Mahi Pono h3	Maui H3	USA – Maui	Maui		H3						100	t	
+Maui H3	Maui H3	USA – Maui	Maui		H3				Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Red H3	Maui H3	USA – Maui	Maui		H3				Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Yellow H3 Natural	Maui H3	USA – Maui	Maui	Natural	H3				Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Moka 11	Maui Moka	USA – Maui	Maui					Mokka	Maui Grown Coffee	Maui Grown Coffee	100	t	
+Maui Moka 14	Maui Moka	USA – Maui	Maui					Mokka	Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Red Peaberry	Maui Peaberry	USA – Maui	Maui		Peaberry	Y			Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Yellow Peaberry	Maui Peaberry	USA – Maui	Maui		Peaberry	Y			Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Red 14	Maui Red	USA – Maui	Maui						Maui Grown Coffee	Maui Grown Coffee	100	t	
+Maui Red Catuai Wash	Maui Red	USA – Maui	Maui	Washed				Catuai	Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Red Natural 14 (NO LONGER USE)	Maui Red	USA – Maui	Maui	Natural					Mahi Pono Farms	Mahi Pono Farms	100	t→f	ARCHIVE (no longer use)
+Maui Red Natural 16	Maui Red	USA – Maui	Maui	Natural					Maui Grown Coffee	Maui Grown Coffee	100	t	
+Maui Red Peaberry	Maui Red	USA – Maui	Maui		Peaberry	Y			Mahi Pono Farms	Mahi Pono Farms	100	t	
+Maui Red/Yellow Prime	Maui Red	USA – Maui	Maui								100	t	
+Maui Yellow	Maui Yellow	USA – Maui	Maui								100	t	
+Maui Yellow 14 Nautral (NO LONGER USE)	Maui Yellow	USA – Maui	Maui	Natural					Mahi Pono Farms	Mahi Pono Farms	100	t→f	ARCHIVE (no longer use); typo/dup — review for merge
+Maui Yellow 16	Maui Yellow	USA – Maui	Maui						Maui Grown Coffee	Maui Grown Coffee	100	t	
+Maui Yellow Peaberry	Maui Yellow	USA – Maui	Maui		Peaberry	Y			Mahi Pono Farms	Mahi Pono Farms	100	t	
+Mexico	Mexico	Mexico			HG					Royal Coffee	154→152	t	grade enriched from invoice
+Mexico Organic	Mexico	Mexico			HG		Organic			Royal Coffee	152	t	grade enriched from invoice
+Mexico Veracruz	Mexico	Mexico	Veracruz		HG					Royal Coffee	152	t	grade enriched from invoice
+Organic Mexico	Mexico	Mexico			HG		Organic			Royal Coffee	152	t	grade enriched from invoice
+Organic Mexico (New Coffee)	Mexico	Mexico			HG		Organic			Royal Coffee	152	t	grade enriched from invoice; typo/dup — review for merge
+Nicaragu a Segovia	Nicaragua	Nicaragua	Segovia		SHG					Royal Coffee	152	t	grade enriched from invoice
+Nicaragu Olomega Supreme	Nicaragua	Nicaragua	Olomega		SHG					Royal Coffee	152	t	grade?:'Supremo' invalid for Nicaragua; grade enriched from invoice
+Nicaragu Robusta	Nicaragua	Nicaragua			SHG			Robusta		Royal Coffee	152	t	grade enriched from invoice
+Nicaragua Olomega	Nicaragua	Nicaragua	Olomega		SHG					Royal Coffee	132→152	t	grade enriched from invoice
+Nicaragua Robusta	Nicaragua	Nicaragua			SHG			Robusta		Royal Coffee	132→152	t	grade enriched from invoice
+Organic Nicaragua	Nicaragua	Nicaragua			SHG		Organic			Royal Coffee	152	t	grade enriched from invoice
+Organic Timor peaberry	Pacific Peaberry	Timor-Leste			Peaberry	Y	Organic			Royal Coffee	132	t	
+Organic Timor Peaberry	Pacific Peaberry	Timor-Leste			Peaberry	Y	Organic			Royal Coffee	152→132	t	
+Papa New Guinea Peaberry	Pacific Peaberry	Papua New Guinea	Papa		Peaberry	Y				Royal Coffee	152→132	t	
+PNG Peaberry	Pacific Peaberry	Papua New Guinea			Peaberry	Y				Royal Coffee	132	t	
+Organic papa New Guinea	Papua New Guinea	Papua New Guinea	Papa				Organic			Royal Coffee	152	t	bag?:invoice shows Siane Chimbu Ecotact=132; purchases=152 — confirm
+Organic Papa New Guinea	Papua New Guinea	Papua New Guinea	Papa				Organic			Royal Coffee	152	t	bag?:invoice shows Siane Chimbu Ecotact=132; purchases=152 — confirm
+Organic PNG Simbu	Papua New Guinea	Papua New Guinea	Simbu				Organic			Royal Coffee	152	t	bag?:invoice shows Siane Chimbu Ecotact=132; purchases=152 — confirm
+Papa New Guinea (not peaberry)	Papua New Guinea	Papua New Guinea	Papa		Peaberry	Y				Royal Coffee	152	t	bag?:invoice shows Siane Chimbu Ecotact=132; purchases=152 — confirm
+Papa New Guinea Peaberry	Papua New Guinea	Papua New Guinea	Papa		Peaberry	Y				Royal Coffee	100→132	t	bag?:invoice shows Siane Chimbu Ecotact=132; purchases=152 — confirm; had Hawaiian-default 100 — set 132 (peaberry GrainPro)
+Organic Peru	Peru	Peru					Organic			Royal Coffee	152	t	bag?:invoices=152 (Vida Alta) but purchase records=154 — confirm
+Organic Peru Selva Andina	Peru	Peru	Selva Andina				Organic			Royal Coffee	152	t	bag?:invoices=152 (Vida Alta) but purchase records=154 — confirm
+PERU FT-FLO/USA ORGANIC CAFE DE MUJER APROCCURMA	Peru	Peru					Organic|Fair Trade			Royal Coffee	152	t	bag?:invoices=152 (Vida Alta) but purchase records=154 — confirm
+Peru Vida Alta	Peru	Peru	Vida Alta							Royal Coffee	154	t	bag?:invoices=152 (Vida Alta) but purchase records=154 — confirm
+Sumatra	Sumatra	Indonesia			Grade 1					Royal Coffee	132	t	grade enriched from invoice
+Sumatra Takengon & Sulawesi	Sumatra	Indonesia	Takengon		Grade 1					Royal Coffee	132	t	grade enriched from invoice
+Yemen Mocca	Yemen	Yemen	Mocca							Royal Coffee	152	t	
