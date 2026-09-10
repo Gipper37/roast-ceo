@@ -76,13 +76,21 @@ BEGIN
             AND p.polcmd IN ('r', '*')
             AND pg_get_expr(p.polqual, c.oid) NOT LIKE '%auth_%'
         )
-        -- Explicit catalog allowlist. These are intentionally global tables
-        -- (every row has company_id IS NULL) whose global-read policy is
-        -- written as "(company_id IS NULL OR company_id IN auth_company_ids())".
-        -- The OR'd tenant clause trips the auth_ heuristic above, so they must
-        -- be named here. supplier_category went global in 20260609000003.
-        OR c.relname = ANY (ARRAY['supplier_category'])
-      ) AS is_catalog
+      ) AS is_catalog,
+      -- SHARED DEFAULTS: "(company_id IS NULL OR company_id IN auth_company_ids())".
+      -- Global rows everyone may read, plus each tenant's own. The OR'd tenant
+      -- clause trips the auth_ heuristic above, so these used to be named in a
+      -- hand-kept allowlist — which is both a maintenance tax and too blunt:
+      -- allowlisting a table stops it being checked AT ALL, so a genuine tenant
+      -- row leaking from one would go unseen. Detect the shape instead, then
+      -- count only the rows that would actually be a leak (company_id NOT NULL).
+      EXISTS (
+        SELECT 1 FROM pg_policy p
+        WHERE p.polrelid = c.oid
+          AND p.polcmd IN ('r', '*')
+          AND pg_get_expr(p.polqual, c.oid) LIKE '%company_id IS NULL%'
+          AND pg_get_expr(p.polqual, c.oid) LIKE '%auth_company_ids%'
+      ) AS is_shared_default
     FROM pg_class c
     JOIN pg_namespace n ON n.oid = c.relnamespace
     WHERE n.nspname = 'public'
@@ -91,7 +99,13 @@ BEGIN
     ORDER BY c.relname
   LOOP
     BEGIN
-      EXECUTE format('SELECT count(*) FROM public.%I', r.relname) INTO cnt;
+      IF r.is_shared_default AND NOT r.is_catalog THEN
+        -- Only a row that BELONGS to some tenant can be a leak here; the global
+        -- rows are visible on purpose. This is stricter than skipping the table.
+        EXECUTE format('SELECT count(*) FROM public.%I WHERE company_id IS NOT NULL', r.relname) INTO cnt;
+      ELSE
+        EXECUTE format('SELECT count(*) FROM public.%I', r.relname) INTO cnt;
+      END IF;
     EXCEPTION WHEN OTHERS THEN
       RAISE WARNING 'ERROR  %: %', r.relname, SQLERRM;
       err_count := err_count + 1;
@@ -102,6 +116,11 @@ BEGIN
       IF r.is_catalog THEN
         catalog_rows := catalog_rows + 1;
         RAISE NOTICE '  catalog  %: % rows (expected, USING true)', r.relname, cnt;
+      ELSIF r.is_shared_default THEN
+        -- cnt is already tenant-owned-only here, so reaching this branch with
+        -- cnt > 0 IS a leak.
+        tenant_leaks := tenant_leaks + 1;
+        RAISE WARNING '  LEAK     %: % tenant-owned rows visible (shared-defaults table)', r.relname, cnt;
       ELSE
         tenant_leaks := tenant_leaks + 1;
         RAISE WARNING '  LEAK     %: % rows (tenant table should return 0!)', r.relname, cnt;
