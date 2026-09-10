@@ -52,6 +52,13 @@ comment on function public.refresh_consumables_for_shipment() is
 -- Both reasons, one trigger.
 drop trigger if exists trg_propagate_shipping_to_consumable_orders on public.shipment_received;
 drop trigger if exists trg_refresh_consumable_cost_on_receipt      on public.shipment_received;
+-- 🔴 And its OWN name. This file was applied to prod by hand on 2026-09-08 while
+-- prod's ledger recorded nothing, so CI would replay it and hit
+-- "trigger ... already exists" — aborting the release at migration 55 of 69,
+-- AFTER 20260908000011 re-runs its fleet-wide backfill and BEFORE
+-- 20260908000014 undoes the damage. Two of the four hand-applied cost
+-- migrations dropped their own trigger first; this one did not.
+drop trigger if exists trg_refresh_consumables_for_shipment on public.shipment_received;
 
 create trigger trg_refresh_consumables_for_shipment
   after update of shipping_cost_unit, date_received on public.shipment_received
