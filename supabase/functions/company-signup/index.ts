@@ -13,8 +13,30 @@ const PARAM_ID_MAP: Record<string, string> = {
 
 const TRIAL_DAYS = 30
 
+// The welcome mail is DKIM-signed from roast@strataroast.com. What goes into it
+// is whatever the form said the company and the person were called.
+function esc(s: string): string {
+  return s
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+// Constant-time-enough equality for two secrets: compare digests, not strings.
+async function sameSecret(a: string, b: string): Promise<boolean> {
+  const enc = new TextEncoder()
+  const [da, db] = await Promise.all([
+    crypto.subtle.digest('SHA-256', enc.encode(a)),
+    crypto.subtle.digest('SHA-256', enc.encode(b)),
+  ])
+  const x = new Uint8Array(da), y = new Uint8Array(db)
+  let diff = 0
+  for (let i = 0; i < x.length; i++) diff |= x[i] ^ y[i]
+  return diff === 0
+}
+
 function welcomeEmailHtml(adminName: string, companyName: string, trialDays: number): string {
-  const firstName = adminName.split(' ')[0]
+  const firstName = esc(adminName.split(' ')[0])
+  companyName = esc(companyName)
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -80,6 +102,18 @@ Deno.serve(async (req) => {
     return json({ error: 'Method not allowed' }, 405)
   }
 
+  // ── Only the signup route may call this ──────────────────────────────────
+  // The function sits at a public URL, and the gateway accepts any JWT the
+  // project signed — the anon key in every browser included. That bypassed
+  // reCAPTCHA and the per-IP throttle in /api/signup, and minted pre-confirmed
+  // accounts for any address. The route forwards with the service-role key;
+  // nothing else holds it, so it is the proof that the route was the caller.
+  const bearer = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
+  const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
+  if (!bearer || !serviceKey || !(await sameSecret(bearer, serviceKey))) {
+    return json({ error: 'Not authorised' }, 401)
+  }
+
   const supabase = createClient(
     Deno.env.get('SUPABASE_URL')!,
     Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!,
@@ -128,6 +162,11 @@ Deno.serve(async (req) => {
   if (missing.length) {
     return json({ error: `Missing required fields: ${missing.join(', ')}` }, 400)
   }
+  if (typeof company_name !== 'string' || company_name.length > 120
+   || typeof admin_name   !== 'string' || admin_name.length   > 120
+   || typeof email        !== 'string' || email.length        > 254) {
+    return json({ error: 'A name or address is too long.' }, 400)
+  }
 
   // ── Step 1: Create Supabase Auth user ─────────────────────────────────────
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
@@ -137,7 +176,15 @@ Deno.serve(async (req) => {
   })
 
   if (authError) {
-    return json({ error: authError.message }, 400)
+    // "already registered" told a stranger which addresses have accounts, and
+    // let them claim one by racing the real owner to the form. One sentence for
+    // both cases; the real owner knows which applies.
+    const taken = /already (been )?registered|already exists/i.test(authError.message)
+    return json({
+      error: taken
+        ? 'We could not create an account with these details. If you already have a STRATA account, log in or reset your password.'
+        : authError.message,
+    }, 400)
   }
 
   const authUserId = authData.user.id
@@ -287,7 +334,7 @@ Deno.serve(async (req) => {
     try {
       const resendKey = Deno.env.get('RESEND_API_KEY')
       if (resendKey) {
-        const firstName = admin_name.split(' ')[0]
+        const firstName = admin_name.split(' ')[0].replace(/[\r\n]/g, ' ').slice(0, 40)
         await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: {
