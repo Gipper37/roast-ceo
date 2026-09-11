@@ -2,8 +2,9 @@
 # ============================================================
 # Cross-tenant RLS leak test
 # ============================================================
-# For every public table with RLS enabled, query as the `authenticated`
-# role with no auth.uid() bound and count rows visible.
+# For every public table with RLS enabled — and every public VIEW that
+# authenticated may SELECT — query as the `authenticated` role with no
+# auth.uid() bound and count rows visible.
 #
 # Tables are classified by inspecting their SELECT policies:
 #   CATALOG  — at least one policy with USING expression `true`
@@ -124,6 +125,66 @@ BEGIN
       ELSE
         tenant_leaks := tenant_leaks + 1;
         RAISE WARNING '  LEAK     %: % rows (tenant table should return 0!)', r.relname, cnt;
+      END IF;
+    END IF;
+  END LOOP;
+
+  -- ── Views ──────────────────────────────────────────────────────────────
+  -- A view has no policies of its own. With security_invoker it inherits the
+  -- RLS of every table underneath it; without it, it runs as its owner
+  -- (postgres, BYPASSRLS) and returns every tenant's rows — the class of
+  -- leak 20260910000001 closed for 27 views. Classify a view as catalog only
+  -- when EVERY base table it reaches (through other views too) is catalog;
+  -- otherwise it must return 0 rows to an unscoped authenticated caller.
+  FOR r IN
+    WITH RECURSIVE base AS (
+      SELECT v.oid AS view_oid, t.oid AS rel_oid, t.relkind
+        FROM pg_class v
+        JOIN pg_namespace n ON n.oid = v.relnamespace AND n.nspname = 'public'
+        JOIN pg_rewrite rw ON rw.ev_class = v.oid
+        JOIN pg_depend d ON d.objid = rw.oid AND d.classid = 'pg_rewrite'::regclass
+                        AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid
+       WHERE v.relkind = 'v' AND t.oid <> v.oid AND t.relkind IN ('r', 'v', 'm', 'p')
+      UNION
+      SELECT b.view_oid, t.oid, t.relkind
+        FROM base b
+        JOIN pg_rewrite rw ON rw.ev_class = b.rel_oid AND b.relkind = 'v'
+        JOIN pg_depend d ON d.objid = rw.oid AND d.classid = 'pg_rewrite'::regclass
+                        AND d.refclassid = 'pg_class'::regclass
+        JOIN pg_class t ON t.oid = d.refobjid
+       WHERE t.oid <> b.rel_oid AND t.relkind IN ('r', 'v', 'm', 'p')
+    )
+    SELECT c.relname,
+           bool_and(
+             b.relkind IN ('r', 'p') AND EXISTS (
+               SELECT 1 FROM pg_policy p
+                WHERE p.polrelid = b.rel_oid AND p.polcmd IN ('r', '*')
+                  AND pg_get_expr(p.polqual, b.rel_oid) NOT LIKE '%auth_%'
+             )
+           ) AS is_catalog
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN base b ON b.view_oid = c.oid
+     WHERE n.nspname = 'public' AND c.relkind = 'v'
+       AND has_table_privilege('authenticated', c.oid, 'SELECT')
+     GROUP BY c.relname
+     ORDER BY c.relname
+  LOOP
+    BEGIN
+      EXECUTE format('SELECT count(*) FROM public.%I', r.relname) INTO cnt;
+    EXCEPTION WHEN OTHERS THEN
+      RAISE WARNING 'ERROR  view %: %', r.relname, SQLERRM;
+      err_count := err_count + 1;
+      CONTINUE;
+    END;
+    IF cnt > 0 THEN
+      IF r.is_catalog THEN
+        catalog_rows := catalog_rows + 1;
+        RAISE NOTICE '  catalog  view %: % rows (all base tables catalog)', r.relname, cnt;
+      ELSE
+        tenant_leaks := tenant_leaks + 1;
+        RAISE WARNING '  LEAK     view %: % rows (tenant view should return 0!)', r.relname, cnt;
       END IF;
     END IF;
   END LOOP;
