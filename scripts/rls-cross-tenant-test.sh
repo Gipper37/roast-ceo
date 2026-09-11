@@ -42,7 +42,13 @@ if [[ -z "${REF:-}" || -z "${PW:-}" ]]; then
   echo "✗ Missing REF or PW for $ENV"; exit 1
 fi
 
-URL="postgresql://postgres@db.${REF}.supabase.co:5432/postgres"
+# Prod has a direct host; the staging project (free tier) is reachable only
+# through the session pooler, whose username carries the project ref.
+if [[ "$ENV" == staging ]]; then
+  URL="postgresql://postgres.${REF}@aws-1-us-west-1.pooler.supabase.com:5432/postgres"
+else
+  URL="postgresql://postgres@db.${REF}.supabase.co:5432/postgres"
+fi
 
 echo "Cross-tenant RLS test against $ENV ($REF)"
 echo "==="
@@ -107,10 +113,17 @@ BEGIN
       ELSE
         EXECUTE format('SELECT count(*) FROM public.%I', r.relname) INTO cnt;
       END IF;
-    EXCEPTION WHEN OTHERS THEN
-      RAISE WARNING 'ERROR  %: %', r.relname, SQLERRM;
-      err_count := err_count + 1;
-      CONTINUE;
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        -- No SELECT grant at all for authenticated: the table is locked
+        -- harder than RLS (team_pin, lot_code_sequence). Not a leak, not a
+        -- broken policy — the strictest outcome there is.
+        RAISE NOTICE '  locked   %: no SELECT grant for authenticated', r.relname;
+        CONTINUE;
+      WHEN OTHERS THEN
+        RAISE WARNING 'ERROR  %: %', r.relname, SQLERRM;
+        err_count := err_count + 1;
+        CONTINUE;
     END;
 
     IF cnt > 0 THEN
@@ -173,10 +186,14 @@ BEGIN
   LOOP
     BEGIN
       EXECUTE format('SELECT count(*) FROM public.%I', r.relname) INTO cnt;
-    EXCEPTION WHEN OTHERS THEN
-      RAISE WARNING 'ERROR  view %: %', r.relname, SQLERRM;
-      err_count := err_count + 1;
-      CONTINUE;
+    EXCEPTION
+      WHEN insufficient_privilege THEN
+        RAISE NOTICE '  locked   view %: no SELECT grant for authenticated', r.relname;
+        CONTINUE;
+      WHEN OTHERS THEN
+        RAISE WARNING 'ERROR  view %: %', r.relname, SQLERRM;
+        err_count := err_count + 1;
+        CONTINUE;
     END;
     IF cnt > 0 THEN
       IF r.is_catalog THEN

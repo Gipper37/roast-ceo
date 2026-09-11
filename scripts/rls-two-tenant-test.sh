@@ -36,7 +36,13 @@ case "$ENV" in
     echo "Usage: $0 [prod|staging]"; exit 2 ;;
 esac
 
-URL="postgresql://postgres@db.${REF}.supabase.co:5432/postgres"
+# Prod has a direct host; the staging project (free tier) is reachable only
+# through the session pooler, whose username carries the project ref.
+if [[ "$ENV" == staging ]]; then
+  URL="postgresql://postgres.${REF}@aws-1-us-west-1.pooler.supabase.com:5432/postgres"
+else
+  URL="postgresql://postgres@db.${REF}.supabase.co:5432/postgres"
+fi
 
 echo "Two-tenant RLS smoke test against $ENV"
 echo "==="
