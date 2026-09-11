@@ -58,3 +58,25 @@ jobs:
             exit 1
           fi
           echo "✓ No duplicate timestamps"
+
+      - name: Check that new views declare security_invoker
+        run: |
+          # A view runs as its owner (postgres, BYPASSRLS) unless it says
+          # otherwise, and `create or replace view` silently drops the option.
+          # 20260910000001 set it on every view that existed; every view written
+          # since must carry `security_invoker` on the same statement (the three
+          # owner-run mv_ fronts say `= false` on purpose, and that counts).
+          bad=""
+          for f in supabase/migrations/2026091[0-9]*.sql supabase/migrations/2026[1-9]*.sql supabase/migrations/202[7-9]*.sql; do
+            [[ -f "$f" ]] || continue
+            [[ "$(basename "$f")" < "20260910000001" ]] && continue
+            views=$(grep -Eic '^\s*create\s+(or\s+replace\s+)?view\b' "$f" || true)
+            opts=$(grep -Eic 'security_invoker' "$f" || true)
+            if (( views > opts )); then bad+="$f ($views views, $opts security_invoker)"$'\n'; fi
+          done
+          if [[ -n "$bad" ]]; then
+            echo "✗ Views without security_invoker:"
+            echo "$bad"
+            exit 1
+          fi
+          echo "✓ Every new view says how it runs"
