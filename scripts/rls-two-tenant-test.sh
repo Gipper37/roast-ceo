@@ -6,9 +6,12 @@
 # each (via request.jwt.claims sub) and queries the same tenant
 # tables. Verifies:
 #
-#   1. User A sees rows that all belong to A's company
-#   2. User B sees rows that all belong to B's company
-#   3. The row sets do not overlap
+#   1. User A sees only rows of the companies A belongs to
+#   2. User B sees only rows of the companies B belongs to
+#   3. B belongs to at least one company A does not
+#
+# A user may sit in several companies (the owner's login on staging is
+# in both tenants); every row of every one of them is rightly theirs.
 #
 # Failure means a tenant table is leaking data across companies —
 # the worst category of bug.
@@ -54,6 +57,8 @@ DECLARE
   user_b uuid;
   company_a text;
   company_b text;
+  companies_a text[];
+  companies_b text[];
   a_count int;
   b_count int;
   overlap_count int;
@@ -61,23 +66,35 @@ DECLARE
   failures int := 0;
   r record;
 BEGIN
-  -- Pick two users from different companies
+  -- Pick two users from different companies. A user may belong to more
+  -- than one company (staging's owner login is in both tenants), and every
+  -- row of every company they belong to is rightly theirs — so "foreign"
+  -- is measured against the user's whole company set, and B must own at
+  -- least one company A does not.
   SELECT t.auth_user_id, t.company_id INTO user_a, company_a
   FROM public.team t
   WHERE t.auth_user_id IS NOT NULL
   ORDER BY t.created_at LIMIT 1;
 
+  SELECT array_agg(DISTINCT company_id) INTO companies_a
+  FROM public.team WHERE auth_user_id = user_a;
+
   SELECT t.auth_user_id, t.company_id INTO user_b, company_b
   FROM public.team t
-  WHERE t.auth_user_id IS NOT NULL AND t.company_id != company_a
+  WHERE t.auth_user_id IS NOT NULL
+    AND t.auth_user_id <> user_a
+    AND NOT (t.company_id = ANY (companies_a))
   ORDER BY t.created_at LIMIT 1;
 
-  IF user_a IS NULL OR user_b IS NULL OR company_a = company_b THEN
-    RAISE EXCEPTION 'Need at least 2 distinct companies with team users';
+  IF user_a IS NULL OR user_b IS NULL THEN
+    RAISE EXCEPTION 'Need two users where B belongs to a company A does not';
   END IF;
 
-  RAISE NOTICE 'User A: % (company %)', user_a, company_a;
-  RAISE NOTICE 'User B: % (company %)', user_b, company_b;
+  SELECT array_agg(DISTINCT company_id) INTO companies_b
+  FROM public.team WHERE auth_user_id = user_b;
+
+  RAISE NOTICE 'User A: % (companies %)', user_a, companies_a;
+  RAISE NOTICE 'User B: % (companies %)', user_b, companies_b;
   RAISE NOTICE '---';
 
   -- For each tenant table with a company_id column, count what A
@@ -113,14 +130,14 @@ BEGIN
     PERFORM set_config('request.jwt.claims',
       json_build_object('sub', user_a::text)::text, true);
     EXECUTE format(
-      'SELECT count(*) FROM public.%I WHERE company_id != %L',
-      r.relname, company_a) INTO a_count;
+      'SELECT count(*) FROM public.%I WHERE NOT (company_id = ANY (%L::text[]))',
+      r.relname, companies_a) INTO a_count;
 
     PERFORM set_config('request.jwt.claims',
       json_build_object('sub', user_b::text)::text, true);
     EXECUTE format(
-      'SELECT count(*) FROM public.%I WHERE company_id != %L',
-      r.relname, company_b) INTO b_count;
+      'SELECT count(*) FROM public.%I WHERE NOT (company_id = ANY (%L::text[]))',
+      r.relname, companies_b) INTO b_count;
 
     -- Reset role
     RESET ROLE;
@@ -141,7 +158,7 @@ BEGIN
   IF failures > 0 THEN
     RAISE EXCEPTION '✗ % table(s) leak data across tenants', failures;
   ELSE
-    RAISE NOTICE '✓ No cross-tenant leaks. User A only sees company % rows; User B only sees company % rows.', company_a, company_b;
+    RAISE NOTICE '✓ No cross-tenant leaks. User A only sees rows of %; User B only sees rows of %.', companies_a, companies_b;
   END IF;
 END
 $$ LANGUAGE plpgsql;
