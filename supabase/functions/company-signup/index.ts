@@ -34,6 +34,19 @@ async function sameSecret(a: string, b: string): Promise<boolean> {
   return diff === 0
 }
 
+// The role claim of a JWT the gateway has already verified. Null for anything
+// that is not a three-part token with a JSON payload.
+function jwtRole(token: string): string | null {
+  const parts = token.split('.')
+  if (parts.length !== 3) return null
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof payload?.role === 'string' ? payload.role : null
+  } catch {
+    return null
+  }
+}
+
 function welcomeEmailHtml(adminName: string, companyName: string, trialDays: number): string {
   const firstName = esc(adminName.split(' ')[0])
   companyName = esc(companyName)
@@ -108,9 +121,19 @@ Deno.serve(async (req) => {
   // reCAPTCHA and the per-IP throttle in /api/signup, and minted pre-confirmed
   // accounts for any address. The route forwards with the service-role key;
   // nothing else holds it, so it is the proof that the route was the caller.
+  //
+  // Two ways to recognise it, either suffices: the bearer IS the key this
+  // runtime was given (compared by digest), or it is a JWT whose role claim is
+  // service_role. The second leans on the gateway having verified the
+  // signature before we run — verify_jwt is pinned on for this function in
+  // supabase/config.toml, and a forged role claim is refused there with
+  // "Invalid JWT" (checked on staging). The runtime's copy of the key can
+  // differ in format from the one Vercel holds, which is why the claim check
+  // is not optional.
   const bearer = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '')
   const serviceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
-  if (!bearer || !serviceKey || !(await sameSecret(bearer, serviceKey))) {
+  const byValue = !!bearer && !!serviceKey && await sameSecret(bearer, serviceKey)
+  if (!bearer || !(byValue || jwtRole(bearer) === 'service_role')) {
     return json({ error: 'Not authorised' }, 401)
   }
 
