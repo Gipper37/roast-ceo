@@ -32,20 +32,41 @@ begin;
 
 -- ── 1. Snapshot ────────────────────────────────────────────────────────────
 -- Whole rows, so a restore is an INSERT SELECT rather than a reconstruction.
-create table if not exists mcr_orders_backup_20260805 as
+-- 🔴 NOT `if not exists`. That is how this script nearly ate prod a second time.
+-- The original took the snapshot with `create table if not exists`, so a second
+-- run SILENTLY REUSED the first run's table and then deleted live rows against a
+-- stale restore point — and the guard below reads that same stale table, gets
+-- exactly the counts it expects, and reports success. A snapshot that can be
+-- weeks old while claiming to be fresh is worse than no snapshot.
+--
+-- Plain `create table` now: if the table already exists this ERRORS and the
+-- transaction rolls back before a single row is deleted. Date-stamp the names
+-- for the day you actually run it.
+create table mcr_orders_backup_20260805 as
 select * from orders
  where company_id = '9ShiyDAXhV' and created_by is not null;
 
-create table if not exists mcr_order_details_backup_20260805 as
+create table mcr_order_details_backup_20260805 as
 select od.* from order_details od
  join orders o using (order_id)
  where o.company_id = '9ShiyDAXhV' and o.created_by is not null;
 
--- Expect 3,801 orders and 13,331 details. If these disagree, STOP — something
--- has changed since this was written and the delete below is no longer scoped
--- to what was measured.
-select (select count(*) from mcr_orders_backup_20260805)        as orders_backed_up,
-       (select count(*) from mcr_order_details_backup_20260805) as details_backed_up;
+-- The guard, as an ASSERTION rather than a printed number. A `select` that a
+-- human is supposed to read and act on is not a guard — nobody reads it when the
+-- script is piped, and the one time it mattered it was reporting a stale table's
+-- counts. Re-measure the expectation the day you run this and put it here; if
+-- the source data has moved, this raises and nothing is deleted.
+do $guard$
+declare v_orders int; v_details int;
+begin
+  select count(*) into v_orders  from mcr_orders_backup_20260805;
+  select count(*) into v_details from mcr_order_details_backup_20260805;
+  raise notice 'snapshot took % orders and % details', v_orders, v_details;
+  if v_orders <> 3801 or v_details <> 13331 then
+    raise exception 'snapshot is % orders / % details, expected 3801 / 13331 — the source data has moved since this was scoped; re-measure before deleting anything', v_orders, v_details;
+  end if;
+end
+$guard$;
 
 -- ── 2. Scrap ───────────────────────────────────────────────────────────────
 -- Children first. Both scoped by created_by, never by company alone.
