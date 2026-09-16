@@ -1,0 +1,12 @@
+# Snapshots are tenant data — customer names, addresses, order values. They are
+# NOT committed by default: this repo has a UK tenant, and a full table snapshot
+# sitting in git history is a subject-access problem nobody wants to discover
+# later.
+#
+# To keep one deliberately as the record of an operation (the way
+# mcr_backup_residue_2026-09-16.json is kept), add it by force and say in the
+# commit message what it holds and why it is small enough to keep:
+#
+#   git add -f scripts/snapshots/<file>.json
+*.json
+!.gitignore
