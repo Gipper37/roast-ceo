@@ -49,17 +49,17 @@ begin
     raise exception 'catalog_read does not admit anon';
   end if;
 
-  -- And then actually be anon and read, which is the only check that would
-  -- have caught the original omission. Wrapped so the role is always handed
-  -- back, whatever happens in between.
-  begin
-    set local role anon;
-    select count(*) into v_rows from public.subscription_plans;
-    reset role;
-  exception when others then
-    reset role;
-    raise exception 'anon still cannot read the price list: %', sqlerrm;
-  end;
+  -- Checked WITHOUT becoming anon. The first version of this probe did
+  -- `set local role anon`, read, and reset. The read worked and the role
+  -- did not come back cleanly, so the CLI's own INSERT into
+  -- supabase_migrations was refused: permission denied for schema
+  -- supabase_migrations. The grant had committed and the version had not
+  -- been recorded, which is a worse state than either outcome on its own.
+  -- has_table_privilege answers the same question and changes nothing.
+  if not has_table_privilege('anon', 'public.subscription_plans', 'SELECT') then
+    raise exception 'anon still cannot read the price list';
+  end if;
+  select count(*) into v_rows from public.subscription_plans;
 
   if v_rows = 0 then
     raise exception 'anon can read subscription_plans but sees no rows, so the pricing page would render empty';
