@@ -32,25 +32,39 @@
 
 begin;
 
--- Raised because this timed out on prod and took the release with it.
+-- ── What this cost the first time, and why it now has a budget ───────────
 --
--- The measurement in the header was taken against Maui only: 413 short
+-- The measurement in the header was taken against Maui alone: 413 short
 -- draws. Production carries 16,597 across 60 company/facility/origin groups
--- and four roasteries, Social Hour US alone holding 7,411. The default
--- statement timeout on the database is 120 seconds and the whole DO block
--- is one statement, so the pass was cancelled part way and the migration
--- rolled back, leaving the release stopped at this file.
+-- and four roasteries, Social Hour US holding 7,411 by itself. The database
+-- cancels a statement at 120 seconds and the whole DO block is one
+-- statement, so the first attempt was killed part way and took 62 later
+-- migrations down with it.
 --
--- Bounded rather than disabled. `0` here would let a pathological loop hold
--- its advisory locks indefinitely with nobody watching; thirty minutes is
--- fifteen times what it needed and still ends by itself. `set local` so it
--- reverts at commit and no other session inherits it.
+-- Raising the timeout was the wrong answer and it was tried: at 30 minutes
+-- the pass ran for eleven of them inside one transaction, holding a lock on
+-- every row it had touched, and a roastery archiving a product on the live
+-- site got "canceling statement due to lock timeout" instead. A backfill
+-- that nothing depends on must never be the reason somebody cannot work.
 --
--- Editing an applied migration would normally be wrong. This one has run on
--- staging and has NOT run on prod, so the edit changes only the run that
--- still has to happen, and the pass is idempotent either way: re-running it
--- names nothing, because the rows it would add already exist.
-set local statement_timeout = '30min';
+-- So it is bounded on both sides now:
+--
+--   lock_timeout gives up after a second rather than waiting on anybody. A
+--   row a person is editing is skipped, which the per-origin handler below
+--   already treats as normal.
+--
+--   a wall-clock budget stops the loop rather than the server stopping it.
+--   Whatever is not reached stays in the reconciliation queue, which the
+--   header already says is an acceptable resting place, and the queue's
+--   "Name everything that can be named" button finishes it on demand.
+--
+-- The result always commits, so it can never strand the release again, and
+-- it is idempotent: a later run names only what this one did not reach.
+set local lock_timeout = '1s';
+-- 3 minutes is the backstop, not the plan. The loop's own 60 second budget
+-- is what decides when it stops; this only catches a single origin that
+-- starts just under the wire and then runs long.
+set local statement_timeout = '3min';
 
 do $$
 declare
@@ -58,6 +72,10 @@ declare
   v_res jsonb;
   v_roasts int := 0;
   v_lbs numeric := 0;
+  v_skipped int := 0;
+  -- clock_timestamp, not now(): now() is frozen at the start of the
+  -- transaction and would never advance inside this loop.
+  v_deadline timestamptz := clock_timestamp() + interval '60 seconds';
 begin
   -- Per (company, facility, origin) so one tenant's bad row cannot strand the
   -- rest, and so the advisory lock inside is taken at the same grain the engine
@@ -67,6 +85,12 @@ begin
       from public.roast_lot_shortfall s
      where s.waived_at is null
   loop
+    -- Stop ourselves before the server does. Leaving the rest in the queue
+    -- is a known, documented state; failing the release is not.
+    if clock_timestamp() > v_deadline then
+      v_skipped := v_skipped + 1;
+      continue;
+    end if;
     begin
       v_res := public._attribute_unsourced_for_origin(r.company_id, r.facility_id, r.origin_id, null);
       v_roasts := v_roasts + coalesce((v_res->>'roasts_repaired')::int, 0);
@@ -78,7 +102,11 @@ begin
     end;
   end loop;
 
-  raise notice 'Named the green for % roast(s), % lb.', v_roasts, round(v_lbs, 1);
+  if v_skipped > 0 then
+    raise notice 'Named the green for % roast(s), % lb. % origin group(s) were left for the queue: the budget ran out.', v_roasts, round(v_lbs, 1), v_skipped;
+  else
+    raise notice 'Named the green for % roast(s), % lb.', v_roasts, round(v_lbs, 1);
+  end if;
 end
 $$;
 
