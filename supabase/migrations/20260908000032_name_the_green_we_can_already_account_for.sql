@@ -32,6 +32,26 @@
 
 begin;
 
+-- Raised because this timed out on prod and took the release with it.
+--
+-- The measurement in the header was taken against Maui only: 413 short
+-- draws. Production carries 16,597 across 60 company/facility/origin groups
+-- and four roasteries, Social Hour US alone holding 7,411. The default
+-- statement timeout on the database is 120 seconds and the whole DO block
+-- is one statement, so the pass was cancelled part way and the migration
+-- rolled back, leaving the release stopped at this file.
+--
+-- Bounded rather than disabled. `0` here would let a pathological loop hold
+-- its advisory locks indefinitely with nobody watching; thirty minutes is
+-- fifteen times what it needed and still ends by itself. `set local` so it
+-- reverts at commit and no other session inherits it.
+--
+-- Editing an applied migration would normally be wrong. This one has run on
+-- staging and has NOT run on prod, so the edit changes only the run that
+-- still has to happen, and the pass is idempotent either way: re-running it
+-- names nothing, because the rows it would add already exist.
+set local statement_timeout = '30min';
+
 do $$
 declare
   r record;
