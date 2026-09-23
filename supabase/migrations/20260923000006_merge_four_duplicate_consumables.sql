@@ -51,6 +51,7 @@ declare
   v_total     int := 0;
   v_products  int := 0;
   v_rows      int := 0;
+  v_groups    uuid[];
 begin
   for d in select * from _dupes loop
     -- Nothing to do on a database that never had the duplicate.
@@ -86,22 +87,29 @@ begin
     -- The empty product facet the duplicate brought with it, and its group.
     -- Guarded on genuinely unused: if anything ever ordered it, leave it and
     -- let a human decide.
-    delete from public.product_groups g
-     where g.group_id in (
-       select p.group_id from public.products p
-       where p.source_consumable_id = d.drop_id
-         and not exists (select 1 from public.order_details od where od.product_id = p.product_id)
-     )
-     and not exists (
-       select 1 from public.products p2
-       where p2.group_id = g.group_id
-         and p2.source_consumable_id is distinct from d.drop_id);
+    --
+    -- ORDER MATTERS, and a rehearsal against production proved it. Deleting
+    -- the group first fires products_group_id_fkey ON DELETE SET NULL, which
+    -- writes group_id = NULL into the very product row about to be removed --
+    -- and products_group_id_not_null rejects it. The whole migration aborted
+    -- on the third pair, after the two gold bags had already merged. Product
+    -- first, then the group it leaves behind.
+    v_groups := array(
+      select p.group_id from public.products p
+      where p.source_consumable_id = d.drop_id
+        and p.group_id is not null
+        and not exists (select 1 from public.order_details od where od.product_id = p.product_id));
 
     delete from public.products p
      where p.source_consumable_id = d.drop_id
        and not exists (select 1 from public.order_details od where od.product_id = p.product_id);
     get diagnostics v_rows = row_count;
     v_products := v_products + v_rows;
+
+    -- Only groups nothing else lives in.
+    delete from public.product_groups g
+     where g.group_id = any(v_groups)
+       and not exists (select 1 from public.products p2 where p2.group_id = g.group_id);
 
     -- Anything still pointing here (a product that HAS been ordered) keeps its
     -- history but must not dangle.
