@@ -117,18 +117,21 @@ update public.consumable_inventory set updated_at = now();
 
 do $$
 declare
-  v_rate numeric;
+  v_src  text;
+  v_hits int;
 begin
-  select daily_usage into v_rate
-  from public.consumable_inventory
-  where consumable_inventory_id = 'cons_0a22ec5e1241b32e';
+  select prosrc into v_src from pg_proc
+  where oid = 'public.update_consumable_metrics()'::regprocedure;
 
-  if v_rate is null then
-    raise notice 'probe: Monin Vanilla not on this database, skipping';
-  elsif v_rate < 1.5 then
-    raise exception 'usage still excludes imports: Monin Vanilla is %/day, expected ~1.9', v_rate;
-  else
-    raise notice 'probe ok: Monin Vanilla %/day', v_rate;
+  -- Two filters must survive (the since-last-count blocks) and no more.
+  v_hits := (length(v_src) - length(replace(v_src, 'is_legacy_import', ''))) / length('is_legacy_import');
+  if v_hits <> 2 then
+    raise exception 'expected 2 is_legacy_import filters (the stock blocks), found %', v_hits;
+  end if;
+
+  -- And neither survivor may sit in a 92-day window.
+  if v_src ~ 'CURRENT_DATE - interval ''92 days''(.|\n){0,200}?is_legacy_import' then
+    raise exception 'a 92-day usage block still filters imports out';
   end if;
 end $$;
 
