@@ -116,33 +116,49 @@ END;
 $function$;
 
 -- ── Prove it, on the shape that was actually failing ────────────────────
+-- Tenant-agnostic ON PURPOSE. The first version of this probe copied MCR's
+-- company_id to build its test row, which inserted nothing on staging (that
+-- tenant does not exist there), asserted against a row that was not there and
+-- failed the push. Same mistake as the Monin probe last week: assert the
+-- FUNCTION, never one tenant's data.
 do $$
 declare
-  v_def text := pg_get_functiondef('public.trg_stamp_roasted_weight'::regproc);
-  v_id  text := 'probe-hotfix-' || md5(clock_timestamp()::text);
-  v_w   numeric; v_lbs numeric; v_date timestamp;
+  v_def  text := pg_get_functiondef('public.trg_stamp_roasted_weight'::regproc);
+  v_id   text := 'probe-hotfix-' || md5(clock_timestamp()::text);
+  v_co   text; v_fac text;
+  v_lbs  numeric; v_w numeric; v_date timestamp;
 begin
+  -- Shape assertions run everywhere, with or without data.
   if v_def like '%public.charge_weights %' then
     raise exception 'the function still references the non-existent charge_weights';
   end if;
   if v_def not like '%charge_weight_lbs := v_charge_weight%' then
-    raise exception 'the function no longer stamps charge_weight_lbs';
+    raise exception 'the function no longer stamps charge_weight_lbs — green deduction reads it';
   end if;
-  if v_def not like '%standard_parameters sp%' and v_def not like '%standard_parameters WHERE%' then
-    null;  -- shape check only; the retention lookup is asserted by the probe below
+  if v_def not like '%charge_weight_options%' then
+    raise exception 'the function no longer resolves charge_weight_options';
+  end if;
+  if v_def not like '%1de271df%' then
+    raise exception 'the retention parameter is not 1de271df (RF1iFWjOh7 is Roast Week Reset Day = 4)';
   end if;
 
-  -- A live roast with a NUMERIC-STRING charge weight: the exact shape that
-  -- failed all morning, and the shape 1,043 of MCR's 1,044 roasts use.
-  insert into roast_log (roast_log_id, company_id, facility_id, roaster_unit_id,
-                         charge_weight, "charged?")
-  select v_id, company_id, facility_id, roaster_unit_id, '80', true
-    from roast_log where company_id = '9ShiyDAXhV'
-     and roaster_unit_id is not null order by roast_date desc limit 1;
+  -- Behavioural proof, on ANY tenant that has a facility. A charged roast with
+  -- a NUMERIC-STRING charge weight is the shape that failed all morning and
+  -- the shape almost every real roast uses.
+  select f.company_id, f.facility_id into v_co, v_fac
+    from public.facilities f limit 1;
+
+  if v_co is null then
+    raise notice 'no facility in this database — shape assertions passed, behaviour not exercised';
+    return;
+  end if;
+
+  insert into public.roast_log (roast_log_id, company_id, facility_id, charge_weight, "charged?")
+  values (v_id, v_co, v_fac, '80', true);
 
   select charge_weight_lbs, roasted_weight, roast_date
     into v_lbs, v_w, v_date
-    from roast_log where roast_log_id = v_id;
+    from public.roast_log where roast_log_id = v_id;
 
   if v_lbs is distinct from 80 then
     raise exception 'charge_weight_lbs came out as % — the green deduction reads this', v_lbs;
@@ -157,7 +173,7 @@ begin
   raise notice 'a charged roast saves: charge 80 lbs -> charge_weight_lbs %, roasted_weight %, dated %',
     v_lbs, v_w, v_date;
 
-  delete from roast_log where roast_log_id = v_id;
+  delete from public.roast_log where roast_log_id = v_id;
 end $$;
 
 commit;
