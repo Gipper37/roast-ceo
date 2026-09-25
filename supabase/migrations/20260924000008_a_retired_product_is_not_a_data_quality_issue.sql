@@ -16,10 +16,23 @@
 --
 -- View definition read from pg_get_viewdef and patched in one place, never
 -- retyped.
+--
+-- 🔴 `with (security_invoker = true)` is NOT optional and is NOT returned by
+-- pg_get_viewdef. The view already had it; CREATE OR REPLACE VIEW without a
+-- WITH clause RESETS reloptions, so the first version of this migration
+-- silently turned a tenant-scoped view into one that runs as its owner and
+-- bypasses RLS on every table it reads. On staging it then returned 766 rows
+-- across every tenant. Caught by scripts/rls-cross-tenant-test.sh, not by
+-- anything in this file.
+--
+-- The lesson generalises past this view: pg_get_functiondef carries a
+-- function's whole definition, pg_get_viewdef carries only a view's SELECT.
+-- Options live in pg_class.reloptions and have to be copied by hand.
 
 begin;
 
-create or replace view public.data_quality_issues as
+create or replace view public.data_quality_issues
+with (security_invoker = true) as
  SELECT 'product'::text AS entity_type,
     p.product_id AS entity_id,
     p.product_name AS entity_name,
@@ -101,6 +114,18 @@ begin
   end if;
   raise notice 'retired products no longer appear; % issue(s) remain in total',
     (select count(*) from public.data_quality_issues);
+end $$;
+
+do $$
+declare v text;
+begin
+  select c.reloptions::text into v
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public' and c.relname = 'data_quality_issues';
+  if v is null or v not ilike '%security_invoker=true%' then
+    raise exception 'data_quality_issues lost security_invoker — it would leak every tenant (reloptions: %)', coalesce(v,'none');
+  end if;
+  raise notice 'data_quality_issues still runs as the invoker';
 end $$;
 
 commit;
