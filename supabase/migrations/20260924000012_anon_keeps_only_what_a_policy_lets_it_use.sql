@@ -30,11 +30,26 @@
 -- signed-out request into a writer on the team table. After this it does not,
 -- because the grant is gone too.
 --
--- SELECT is deliberately untouched: pack_run_correction has a real anon read
--- policy, and revoking reads here would be a different change with a
--- different blast radius.
+-- SELECT is deliberately untouched, and the check below proves it rather than
+-- asserting what it should be. The first version of this migration asserted
+-- that anon CAN read pack_run_correction, because it can on staging. On prod
+-- it cannot: the table carries an anon-facing read policy with no matching
+-- grant behind it, so that policy is already inert there. The assertion was
+-- true of one environment and the migration aborted the prod run at its very
+-- last statement — after the other ten had applied. Caught by rehearsing the
+-- whole set against prod inside a transaction and rolling it back.
+--
+-- (That dead read policy on prod is a real key-vs-policy mismatch. It predates
+-- this work and is NOT touched here.)
 
 begin;
+
+create temporary table _anon_select_before on commit drop as
+  select c.relname,
+         has_table_privilege('anon', 'public.' || quote_ident(c.relname), 'SELECT') as could_read
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname = 'public'
+     and c.relname in ('team','company_kyc','customers','pack_run_correction');
 
 revoke insert, update, delete, truncate on public.team                from anon;
 revoke insert, update, delete, truncate on public.company_kyc         from anon;
@@ -52,10 +67,13 @@ begin
      and privilege_type in ('INSERT','UPDATE','DELETE','TRUNCATE');
   if v is not null then raise exception 'anon still holds %', v; end if;
 
-  -- And the reads that ARE policy-backed must survive.
-  if not has_table_privilege('anon','public.pack_run_correction','SELECT') then
-    raise exception 'revoked the anon read that pack_run_correction_read depends on';
-  end if;
+  -- Whatever anon could READ before, it must still read now. Compared against
+  -- what this database actually had, not against what one environment has.
+  select string_agg(relname, ', ' order by relname) into v
+    from _anon_select_before b
+   where b.could_read
+     and not has_table_privilege('anon', 'public.' || quote_ident(b.relname), 'SELECT');
+  if v is not null then raise exception 'this migration took away an anon read on %', v; end if;
 
   raise notice 'anon holds no write privilege on team, company_kyc, customers or pack_run_correction';
 end $verify$;
