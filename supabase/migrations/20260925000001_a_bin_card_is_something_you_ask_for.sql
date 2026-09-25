@@ -24,9 +24,12 @@
 --   drop    when the roast finishes, so the card can carry the real weight
 --   manual  only from the roast row, on demand
 --
--- MCR is seeded to `charge` explicitly. They have been printing since 09-22 and
--- silently taking a working feature away would be the same discourtesy in the
--- other direction.
+-- A tenant that has ALREADY been printing bin cards keeps them. Expressed as
+-- "has bin_card rows", not as a list of company ids: this migration has to run
+-- on staging and on any future database, and a probe that needs one tenant's
+-- data is one I have now written three times this week. MCR satisfies it
+-- because it has 25 cards; Social Hour does not, because its 31 all landed on
+-- the single day 20260924000005 gave it the plan.
 
 begin;
 
@@ -34,9 +37,14 @@ insert into public.standard_parameters (parameters_id, parameter, amount)
 values ('bin_card_surface', 'Bin card — when it appears', null)
 on conflict (parameters_id) do update set parameter = excluded.parameter;
 
--- Default off, for everyone, stated once here rather than implied by absence.
 insert into public.company_parameters (company_id, facility_id, parameter_id, value, display_name)
-select c.company_id, f.facility_id, 'bin_card_surface', 'off', 'Bin card — when it appears'
+select c.company_id, f.facility_id, 'bin_card_surface',
+       case when exists (
+              select 1 from public.bin_card b
+               where b.company_id = c.company_id
+                 and b.printed_at < date '2026-09-24'   -- before the plan change
+            ) then 'charge' else 'off' end,
+       'Bin card — when it appears'
   from public.companies c
   join public.facilities f on f.company_id = c.company_id
  where not exists (
@@ -44,29 +52,34 @@ select c.company_id, f.facility_id, 'bin_card_surface', 'off', 'Bin card — whe
     where cp.company_id = c.company_id and cp.facility_id = f.facility_id
       and cp.parameter_id = 'bin_card_surface');
 
--- MCR keeps what it has been using since 2026-09-22.
-update public.company_parameters
-   set value = 'charge'
- where parameter_id = 'bin_card_surface'
-   and company_id = '9ShiyDAXhV';
-
 do $verify$
-declare v_mcr text; v_sh text; v_off int;
+declare v_bad int; v_on int; v_off int; v_missing int;
 begin
-  select value into v_mcr from public.company_parameters
-   where parameter_id='bin_card_surface' and company_id='9ShiyDAXhV' limit 1;
-  select value into v_sh  from public.company_parameters
-   where parameter_id='bin_card_surface' and company_id='R7CbqHmA1j' limit 1;
-  select count(*) into v_off from public.company_parameters
-   where parameter_id='bin_card_surface' and value='off';
+  -- Only the four modes exist.
+  select count(*) into v_bad from public.company_parameters
+   where parameter_id = 'bin_card_surface'
+     and value not in ('off','charge','drop','manual');
+  if v_bad > 0 then raise exception '% facility row(s) hold an unknown bin-card mode', v_bad; end if;
 
-  if v_mcr is distinct from 'charge' then
-    raise exception 'MCR would lose the bin card it has been printing (got %)', coalesce(v_mcr,'no row');
-  end if;
-  if v_sh is distinct from 'off' then
-    raise exception 'Social Hour would keep getting a bin card nobody asked for (got %)', coalesce(v_sh,'no row');
-  end if;
-  raise notice 'bin card: MCR=charge, everyone else off (% facilities)', v_off;
+  -- Every facility has an answer, so the default is stated rather than implied.
+  select count(*) into v_missing
+    from public.companies c join public.facilities f on f.company_id = c.company_id
+   where not exists (select 1 from public.company_parameters cp
+                      where cp.company_id=c.company_id and cp.facility_id=f.facility_id
+                        and cp.parameter_id='bin_card_surface');
+  if v_missing > 0 then raise exception '% facility(ies) have no bin-card setting', v_missing; end if;
+
+  -- Nobody who was already printing has been switched off.
+  select count(*) into v_bad
+    from public.company_parameters cp
+   where cp.parameter_id='bin_card_surface' and cp.value='off'
+     and exists (select 1 from public.bin_card b
+                  where b.company_id = cp.company_id and b.printed_at < date '2026-09-24');
+  if v_bad > 0 then raise exception '% facility(ies) that were printing would lose the card', v_bad; end if;
+
+  select count(*) into v_on  from public.company_parameters where parameter_id='bin_card_surface' and value='charge';
+  select count(*) into v_off from public.company_parameters where parameter_id='bin_card_surface' and value='off';
+  raise notice 'bin card: % facility(ies) keep it at charge, % default to off', v_on, v_off;
 end $verify$;
 
 commit;
