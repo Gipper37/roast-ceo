@@ -124,8 +124,22 @@ update public.order_details od
 alter table public.order_details enable trigger user;
 
 do $verify$
-declare v_bad int; v_rw_before numeric; v_rw_after numeric;
+declare v_bad int; v_rw_before numeric; v_rw_after numeric; v_matched int;
 begin
+  -- These 44 order lines exist on PROD only. Staging and every development
+  -- database carry their own data, so this must be a clean no-op there rather
+  -- than a failed release: the first cut asserted prod's totals unconditionally
+  -- and turned the staging push red while prod was already correct.
+  -- A PARTIAL match is still an error -- that would mean the ids drifted.
+  select count(*) into v_matched
+    from _fix f join public.order_details od using (order_detail_id);
+  if v_matched = 0 then
+    raise notice 'none of the 44 repaired lines exist here; nothing to verify';
+    return;
+  elsif v_matched <> 44 then
+    raise exception 'only % of the 44 repaired lines exist here; the id list has drifted', v_matched;
+  end if;
+
   -- Exactly the 44 intended lines moved, and every one landed on its target.
   select count(*) into v_bad
     from _fix f join public.order_details od using (order_detail_id)
@@ -156,13 +170,25 @@ begin
   if v_bad > 0 then raise exception '% line(s) outside the repair list changed product', v_bad; end if;
 
   -- Roasted demand: only the nine case lines move, and they move by 10x.
+  -- Asserted on the RESULT, not on the starting value, so re-running finds the
+  -- same answer. The first cut asserted "701.50 -> 805.00", which holds exactly
+  -- once: replay it against an already-repaired database and it reads
+  -- "805.00 -> 805.00" and fails a migration that did nothing wrong.
   select coalesce(sum(b.roasted_weight),0), coalesce(sum(a.roasted_weight),0)
     into v_rw_before, v_rw_after
     from _before b join public.order_details a using (order_detail_id)
     join _fix f using (order_detail_id);
-  if round(v_rw_before,2) <> 701.50 or round(v_rw_after,2) <> 805.00 then
-    raise exception 'roasted_weight across the 44 went % -> %, expected 701.50 -> 805.00',
-      round(v_rw_before,2), round(v_rw_after,2);
+  raise notice 'roasted_weight across the 44: % -> %', round(v_rw_before,2), round(v_rw_after,2);
+
+  select count(*) into v_bad
+    from _fix f join public.order_details od using (order_detail_id)
+   where round(coalesce(od.roasted_weight,0)::numeric,4) is distinct from round(f.new_roasted_weight,4);
+  if v_bad > 0 then
+    raise exception '% line(s) did not land on their intended roasted_weight', v_bad;
+  end if;
+
+  if round(v_rw_after,2) <> 805.00 then
+    raise exception 'roasted_weight across the 44 settled at %, expected 805.00', round(v_rw_after,2);
   end if;
 
   select count(*) into v_bad
