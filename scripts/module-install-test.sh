@@ -252,6 +252,39 @@ else
   warn "authenticated can SELECT payment_transactions.raw_response; it must never contain a vault id"
 fi
 
+# ── 7. No table in public is reachable with RLS off ────────────────────────
+#
+# Supabase's default privileges grant `authenticated` ALL privileges on every
+# table created in public, and RLS defaults OFF. That combination is safe only
+# because RLS is meant to be the fence, and a migration writing a quick snapshot
+# table does not think of itself as publishing an API. PostgREST exposes every
+# table in public the role can reach, so on 2026-10-04 it was publishing five of
+# them: 350 rows across four companies, readable AND writable by any logged-in
+# user of any tenant, including roast plans, purchase costs and payment values.
+#
+# 20261004000008 closed those five. This check is why there will not be a sixth:
+# a migration cannot guard the future, a release check can.
+head2 "7. Nothing in public is reachable with RLS off"
+OPEN=$(q "
+  select c.relname || ' (' ||
+         coalesce((select string_agg(distinct g.grantee, ',' order by g.grantee)
+                     from information_schema.role_table_grants g
+                    where g.table_schema='public' and g.table_name=c.relname
+                      and g.grantee in ('anon','authenticated')), '?') || ')'
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname='public' and c.relkind='r' and not c.relrowsecurity
+     and exists (select 1 from information_schema.role_table_grants g
+                  where g.table_schema='public' and g.table_name=c.relname
+                    and g.grantee in ('anon','authenticated'))
+   order by 1")
+if [ -n "$OPEN" ]; then
+  while IFS= read -r t; do
+    [ -n "$t" ] && fail "public.$t has RLS OFF and is granted to a logged-in role: PostgREST is serving it"
+  done <<< "$OPEN"
+else
+  pass "every reachable table in public has RLS enabled"
+fi
+
 printf '\n'
 if [ "$FAILS" -eq 0 ]; then
   printf '\033[32mAll module-install checks passed.\033[0m\n'; exit 0
