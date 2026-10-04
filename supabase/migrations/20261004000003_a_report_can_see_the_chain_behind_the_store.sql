@@ -240,6 +240,38 @@ create or replace view public.customer_profitability
           GROUP BY c.customer_id, c.name_company, c.company_id, cch.chain_id, cch.chain_name) v
   WHERE public.auth_is_team_member();
 
+-- ── 🔴 PIN THE VIEW GRANTS, exactly as the function's are pinned below ────
+--
+-- Staging caught this and it would have shipped otherwise: the push aborted on
+-- this file's own assertion with "anon can now select from customer_revenue; it
+-- could not before".
+--
+-- A view recreated in `public` can be born with the schema's DEFAULT ACL, and
+-- that default is not the same on every database. prod's pg_default_acl for
+-- role `postgres` grants {postgres, authenticated, service_role}; the entry for
+-- `supabase_admin` grants `anon` as well, with ALL privileges. So the same
+-- CREATE OR REPLACE lands a private view on one database and an internet
+-- readable one on another, silently, and these two views carry every customer's
+-- revenue.
+--
+-- This file already does exactly this for gross_margin_report a hundred lines
+-- below, because a DROP takes the ACL with it. The views were left out, and the
+-- header even noted what their grants were without acting on it. Same treatment
+-- now, stated rather than inherited, so the result does not depend on which
+-- role created the object or on which database it runs.
+--
+-- Matching prod, where both views read
+-- `postgres=arwdDxtm | authenticated=rm | service_role=arwdDxtm`: authenticated
+-- gets SELECT, service_role keeps everything, anon and public get nothing.
+-- security_invoker is what makes a SELECT here obey the caller's RLS; the grant
+-- is what decides whether they may ask at all, and both have to be right.
+revoke all on public.customer_revenue       from public, anon;
+revoke all on public.customer_profitability from public, anon;
+grant select on public.customer_revenue       to authenticated;
+grant select on public.customer_profitability to authenticated;
+grant all    on public.customer_revenue       to service_role;
+grant all    on public.customer_profitability to service_role;
+
 comment on view public.customer_revenue is
   'Revenue per CUSTOMER, every non-Canceled line, no cost filter. chain_id and chain_name are the chain that customer is a store of, NULL for the 2,092 that stand alone. Rows are never rolled up here: group by chain_id in the caller when you want the account, leave it alone when you want the store.';
 
