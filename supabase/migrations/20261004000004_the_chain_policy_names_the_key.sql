@@ -200,6 +200,29 @@ create policy customer_chain_write_delete on public.customer_chain
 -- 20260908000034 deliberately withheld.
 grant update (chain_id) on public.customers to authenticated;
 
+-- ── 🔴 And take anon off the chain, because the table was born with it ────
+--
+-- Staging aborted on this file's own assertion, "anon can select from
+-- customer_chain". 20261003000010 created the table and granted
+-- select/insert/update/delete to `authenticated`, which is right, and said
+-- nothing about anon, which was not enough: a new table in `public` inherits
+-- the schema's DEFAULT ACL, and that default is not the same on every database.
+-- prod's pg_default_acl for role `postgres` grants
+-- {postgres, authenticated, service_role}; the entry for `supabase_admin`
+-- grants `anon` too, with ALL privileges. So the same CREATE TABLE lands
+-- private on one database and reachable by anyone holding the publishable key
+-- on another.
+--
+-- A chain row is a roaster's customer list rolled up: the chain names of every
+-- account they trade with. Not catastrophic on its own, and not something to
+-- leave to whichever role happened to run the migration.
+--
+-- Revoked rather than asserted away, so this file makes the thing it checks
+-- true instead of refusing when it is not. `public` is named alongside `anon`
+-- because a grant to PUBLIC reaches anon without naming it, and revoking from
+-- public does NOT reach authenticated, which keeps the grants the policies gate.
+revoke all on public.customer_chain from public, anon;
+
 create or replace function public.guard_customer_chain_column()
 returns trigger
 language plpgsql
