@@ -27,8 +27,15 @@
 
 begin;
 
+-- Row counts BEFORE the lock, so the verify block can assert that enabling RLS
+-- changed no data rather than asserting the table has any. An EMPTY snapshot is
+-- a legitimate state: 20261004000005 creates the table and converts nothing on a
+-- database with no cases, which is exactly what staging is.
+create temporary table _lock_counts_20261004000009 (relname text primary key, n bigint)
+  on commit drop;
+
 do $lock$
-declare v_n int := 0; v_t text;
+declare v_n int := 0; v_t text; v_c bigint;
 begin
   foreach v_t in array array['_case_conversion_20261004', '_case_conversion_20261004_uk'] loop
     if not exists (
@@ -38,6 +45,8 @@ begin
       raise notice 'not here: % (its migration either skipped or dropped an empty snapshot)', v_t;
       continue;
     end if;
+    execute format('select count(*) from public.%I', v_t) into v_c;
+    insert into _lock_counts_20261004000009 (relname, n) values (v_t, v_c);
     execute format('alter table public.%I enable row level security', v_t);
     v_n := v_n + 1;
     raise notice 'locked: public.% now has RLS on and no policy', v_t;
@@ -65,17 +74,26 @@ begin
     raise exception '% policy(ies) exist on a case-conversion snapshot; no row should be visible to anyone', v_bad;
   end if;
 
-  -- 3. The rows are still there. Closing a read must not empty the undo path.
-  for v_rec in
-    select c.relname from pg_class c join pg_namespace n on n.oid = c.relnamespace
-     where n.nspname = 'public' and c.relkind = 'r' and c.relname like '\_case\_conversion%'
-     order by 1
-  loop
+  -- 3. 🔴 The lock changed no DATA. Asserted as before = after, never as
+  --    "the table has rows".
+  --
+  --    The first draft of this file raised when the snapshot was empty, and
+  --    staging refused it: 20261004000005 creates the table and converts
+  --    nothing on a database with no cases to convert, so empty is correct
+  --    there. That is the fifth time in two days that a migration asserted a
+  --    database's DATA rather than its own change, and this file was written
+  --    about that mistake, so it is worth the extra paragraph.
+  --
+  --    What is genuinely invariant is that ALTER TABLE ... ENABLE ROW LEVEL
+  --    SECURITY moves no rows. Comparing the count either side says so and is
+  --    true on an empty table, a full one, and a database without the table.
+  for v_rec in select relname, n from _lock_counts_20261004000009 order by 1 loop
     execute format('select count(*) from public.%I', v_rec.relname) into v_bad;
-    if v_bad = 0 then
-      raise exception '% is empty; the lock-down must not delete rows', v_rec.relname;
+    if v_bad <> v_rec.n then
+      raise exception '% held % row(s) before the lock and % after; enabling RLS must move no rows',
+        v_rec.relname, v_rec.n, v_bad;
     end if;
-    raise notice '% still holds % row(s)', v_rec.relname, v_bad;
+    raise notice '% holds % row(s), unchanged by the lock', v_rec.relname, v_bad;
   end loop;
 
   -- 4. Report what else is still open HERE, without deciding the release on it.
