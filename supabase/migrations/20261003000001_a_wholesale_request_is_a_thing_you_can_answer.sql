@@ -105,11 +105,27 @@ select el.company_id,
    );
 
 do $verify$
-declare v_bad int; v_n int;
+declare v_bad int;
 begin
-  select count(*) into v_n from public.shop_access_request;
-  if v_n < 2 then
-    raise exception 'expected the 2 outstanding requests to carry over, found %', v_n;
+  -- 🔴 This asserted `v_n >= 2`, because prod held exactly two outstanding
+  -- requests the day it was written. Staging holds none, so the migration
+  -- aborted there with "expected the 2 outstanding requests to carry over,
+  -- found 0" and the whole push stopped on a database that was perfectly
+  -- correct. One tenant's row count is not the specification.
+  --
+  -- What actually has to be true is COMPLETENESS: every wholesale_request in
+  -- email_log ended up answerable in shop_access_request. On a database with
+  -- none, that is vacuously true and the migration proceeds, which is right.
+  select count(*) into v_bad
+    from public.email_log el
+   where el.event_type = 'wholesale_request'
+     and not exists (
+       select 1 from public.shop_access_request r
+        where r.company_id = el.company_id
+          and lower(r.email) = lower(el.to_email)
+     );
+  if v_bad > 0 then
+    raise exception '% wholesale request(s) in email_log did not carry over', v_bad;
   end if;
 
   -- Every carried-over request is answerable: pending, with a token.
