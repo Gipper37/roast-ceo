@@ -285,6 +285,48 @@ else
   pass "every reachable table in public has RLS enabled"
 fi
 
+# ── 8. No MATERIALIZED view in public is reachable by a logged-in role ─────
+#
+# Check 7 cannot see a materialized view, and on 2026-10-14 that cost us the
+# seventh instance of this hole: mv_monthly_consumable_stock_by_item served
+# 5,998 rows across four companies to any logged-in user while check 7 printed
+# "every reachable table in public has RLS enabled" and exited 0.
+#
+# Two reasons it was blind, and both have to be fixed or the check is theatre:
+#   * it filters `c.relkind='r'`, and a matview is 'm';
+#   * it joins `information_schema.role_table_grants`, WHICH DOES NOT LIST
+#     MATERIALIZED VIEWS AT ALL. So does information_schema.columns. Verified
+#     on prod: zero rows for a matview that demonstrably held a grant.
+#
+# So this check reads `pg_class.relacl` through has_table_privilege() instead,
+# which is the only place the grant is visible.
+#
+# And the fence is different in kind. A matview CANNOT have row level security —
+# there is no `alter materialized view ... enable row level security` — so RLS
+# with no policy, the fix for the other six, is unavailable. The GRANT is the
+# whole fence. A matview holding tenant data must be reached only through a
+# scoped view that filters by auth_company_ids(), and the matview itself must be
+# readable by nobody but its owner.
+head2 "8. No materialized view in public is reachable by a logged-in role"
+OPEN_MV=$(q "
+  select c.relname || ' (' ||
+         case when has_table_privilege('authenticated', c.oid, 'SELECT')
+                   and has_table_privilege('anon', c.oid, 'SELECT') then 'anon,authenticated'
+              when has_table_privilege('authenticated', c.oid, 'SELECT') then 'authenticated'
+              else 'anon' end || ')'
+    from pg_class c join pg_namespace n on n.oid = c.relnamespace
+   where n.nspname='public' and c.relkind='m'
+     and (has_table_privilege('authenticated', c.oid, 'SELECT')
+       or has_table_privilege('anon', c.oid, 'SELECT'))
+   order by 1")
+if [ -n "$OPEN_MV" ]; then
+  while IFS= read -r t; do
+    [ -n "$t" ] && fail "public.$t is a MATERIALIZED VIEW granted to a logged-in role; it cannot have RLS, so PostgREST serves every tenant's rows"
+  done <<< "$OPEN_MV"
+else
+  pass "no materialized view in public is readable by anon or authenticated"
+fi
+
 printf '\n'
 if [ "$FAILS" -eq 0 ]; then
   printf '\033[32mAll module-install checks passed.\033[0m\n'; exit 0
