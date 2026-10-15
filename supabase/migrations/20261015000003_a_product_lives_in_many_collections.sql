@@ -50,7 +50,12 @@ comment on table public.collection is
 -- ── 2. Many, not one ──────────────────────────────────────────────────────
 
 create table if not exists public.product_group_collection (
-  group_id      text not null references public.product_groups(group_id) on delete cascade,
+  -- 🔴 uuid, not text. product_groups.group_id is uuid while collection.id and
+  -- company_id are text, and a text column here makes the FK unimplementable
+  -- rather than merely wrong: Postgres refuses it outright (42804). Worth the
+  -- line, because every other id in this schema is text and the instinct is to
+  -- type them all the same.
+  group_id      uuid not null references public.product_groups(group_id) on delete cascade,
   collection_id text not null references public.collection(id) on delete cascade,
   company_id    text not null references public.companies(company_id) on delete cascade,
   created_at    timestamptz not null default now(),
