@@ -210,25 +210,43 @@ begin
   end if;
 
   -- 2. The "exactly one owner" CHECK actually refuses both of the wrong shapes.
-  --    Asserted by TRYING them in a savepoint, because a CHECK that is present
+  --    Asserted by TRYING them in a sub-block, because a CHECK that is present
   --    but wrong reads identically to one that works.
-  begin
-    insert into public.customer_discount
-      (customer_discount_id, company_id, customer_id, chain_id, scope, kind, value, effective_from, is_active)
-    values ('_probe_both_20261014', (select company_id from public.companies limit 1),
-            (select customer_id from public.customers limit 1),
-            (select chain_id from public.customer_chain limit 1),
-            'all', 'percent', 5, current_date, true);
-    raise exception 'a rule naming BOTH a customer and a chain was accepted; the one-owner CHECK does not work';
-  exception
-    when check_violation then null;   -- correct
-    when not_null_violation then null;
-  end;
+  --
+  --    🔴 THE IDS MUST COME FROM THE SAME COMPANY. The first draft took
+  --    `(select customer_id from customers limit 1)` and
+  --    `(select chain_id from customer_chain limit 1)` independently, which on
+  --    staging picked a customer from one tenant and a chain from another. The
+  --    tenant guard added above then fired FIRST -- it is a BEFORE trigger, and
+  --    the CHECK is evaluated after -- and raised 'That customer belongs to a
+  --    different company.' as P0001, which is not check_violation, so it
+  --    escaped the handler and failed the push. Two lessons, both worth the
+  --    ink: a BEFORE trigger can mask the constraint you are trying to test,
+  --    and a probe built from unrelated rows is testing the wrong thing.
+  select c.customer_id, cc.chain_id, c.company_id
+    into v_cust, v_chain, v_company
+    from public.customers c
+    join public.customer_chain cc on cc.company_id = c.company_id
+   limit 1;
+
+  if v_cust is null then
+    raise notice 'no company here has both a customer and a chain; skipping the one-owner probes';
+  else
+    begin
+      insert into public.customer_discount
+        (customer_discount_id, company_id, customer_id, chain_id, scope, kind, value, effective_from, is_active)
+      values ('_probe_both_20261014', v_company, v_cust, v_chain,
+              'all', 'percent', 5, current_date, true);
+      raise exception 'a rule naming BOTH a customer and a chain was accepted; the one-owner CHECK does not work';
+    exception
+      when check_violation then null;   -- correct
+    end;
+  end if;
 
   begin
     insert into public.customer_discount
       (customer_discount_id, company_id, customer_id, chain_id, scope, kind, value, effective_from, is_active)
-    values ('_probe_neither_20261014', (select company_id from public.companies limit 1),
+    values ('_probe_neither_20261014', coalesce(v_company, (select company_id from public.companies limit 1)),
             null, null, 'all', 'percent', 5, current_date, true);
     raise exception 'a rule naming NEITHER a customer nor a chain was accepted';
   exception
@@ -240,6 +258,9 @@ begin
   --    savepoint, so this asserts THIS MIGRATION'S behaviour rather than any
   --    database's data. Skipped, with a notice, where there is no chain with a
   --    store and a product to price -- which is every fresh database.
+  --    Re-picked here against the MEMBERSHIP (c.chain_id), which is a stricter
+  --    join than the one above: the store has to actually be IN the chain for
+  --    the rule to reach it, and it needs a product of its own company to price.
   select cc.chain_id, c.customer_id, p.product_id
     into v_chain, v_cust, v_prod
     from public.customer_chain cc
