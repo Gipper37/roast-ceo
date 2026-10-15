@@ -195,7 +195,7 @@ as $function$
 $function$;
 
 do $verify$
-declare v_bad int; v_chain text; v_cust text; v_prod text; v_n int;
+declare v_bad int; v_chain text; v_cust text; v_prod text; v_company text; v_n int;
 begin
   -- 1. The column exists and is nullable in the right places.
   if not exists (select 1 from information_schema.columns
