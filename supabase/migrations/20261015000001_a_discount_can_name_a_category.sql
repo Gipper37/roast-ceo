@@ -129,17 +129,29 @@ $function$;
 do $verify$
 declare
   v_cat text; v_cust text; v_prod text; v_company text; v_n int; v_bad int;
+  v_anycust text; v_anyco text;
 begin
+  -- 🔴 EVERY PROBE TAKES ITS COMPANY FROM THE CUSTOMER IT NAMES. Picking the
+  -- two with independent `limit 1` selects gets a customer from one tenant and
+  -- a company from another, and guard_customer_discount_same_tenant -- a BEFORE
+  -- trigger -- then raises P0001 before the CHECK under test is ever evaluated.
+  -- That failed the staging push for 20261014000002 earlier today and failed it
+  -- again here, which is twice in one evening for the same reason. A probe
+  -- built from unrelated rows is testing the wrong thing.
+  select c.customer_id, c.company_id into v_anycust, v_anyco
+    from public.customers c limit 1;
+
   -- 1. The scope is accepted, and still refuses a nonsense one.
-  begin
-    insert into public.customer_discount
-      (customer_discount_id, company_id, customer_id, scope, scope_ref, kind, value, effective_from, is_active)
-    values ('_probe_badscope_20261015', (select company_id from public.companies limit 1),
-            (select customer_id from public.customers limit 1),
-            'shelf', 'x', 'percent', 5, current_date, true);
-    raise exception 'an unknown scope was accepted; the CHECK is not doing its job';
-  exception when check_violation then null;
-  end;
+  if v_anycust is not null then
+    begin
+      insert into public.customer_discount
+        (customer_discount_id, company_id, customer_id, scope, scope_ref, kind, value, effective_from, is_active)
+      values ('_probe_badscope_20261015', v_anyco, v_anycust,
+              'shelf', 'x', 'percent', 5, current_date, true);
+      raise exception 'an unknown scope was accepted; the CHECK is not doing its job';
+    exception when check_violation then null;
+    end;
+  end if;
 
   -- 2. 🔴 THE CHANGE: a category rule reaches a product on that shelf, and a
   --    product on a different shelf is untouched. Proved on real rows, then
@@ -202,15 +214,16 @@ begin
   end if;
 
   -- 3. A set price may name a category now, and still may not name 'all'.
-  begin
-    insert into public.customer_discount
-      (customer_discount_id, company_id, customer_id, scope, scope_ref, kind, value, effective_from, is_active)
-    values ('_probe_priceall_20261015', (select company_id from public.companies limit 1),
-            (select customer_id from public.customers limit 1),
-            'all', null, 'price', 5, current_date, true);
-    raise exception 'a set price was accepted against Everything, which prices nothing';
-  exception when check_violation then null;
-  end;
+  if v_anycust is not null then
+    begin
+      insert into public.customer_discount
+        (customer_discount_id, company_id, customer_id, scope, scope_ref, kind, value, effective_from, is_active)
+      values ('_probe_priceall_20261015', v_anyco, v_anycust,
+              'all', null, 'price', 5, current_date, true);
+      raise exception 'a set price was accepted against Everything, which prices nothing';
+    exception when check_violation then null;
+    end;
+  end if;
 
   -- 4. Nothing survived.
   select count(*) into v_bad from public.customer_discount
