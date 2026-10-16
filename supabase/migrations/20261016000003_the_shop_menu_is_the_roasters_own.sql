@@ -128,6 +128,28 @@ create trigger trg_audit_update before update on public.shop_menu_item
 -- ── RLS, explicitly, because a new table does not get it for free ─────────
 alter table public.shop_menu_item enable row level security;
 
+-- ── 🔴 AND THE GRANTS, EXPLICITLY IN BOTH DIRECTIONS ──────────────────────
+--
+-- CAUGHT BY THE STAGING REHEARSAL, 2026-10-16: verify step 3 below failed with
+-- `anon can select shop_menu_item`. It was right. A new table in `public` is
+-- born carrying the `supabase_admin` default ACL, and on staging that ACL
+-- grants anon. RLS was already on, so anon would have read zero rows today --
+-- but the grant is the hole, and `shop_config` sat world-readable for five
+-- months on exactly this footing.
+--
+-- It would have PASSED on prod, whose default ACL is clean. That is the trap
+-- worth naming: the migration was relying on an environment's default rather
+-- than stating what it wants, so the same file meant two different things on
+-- two databases. Stated here instead, so it means one thing everywhere.
+--
+-- Both directions, because each fails silently on its own: anon keeping a
+-- grant is a leak, and `authenticated` losing one breaks every read while the
+-- policies look perfectly correct. `revoke ... from public` does NOT revoke
+-- from `authenticated`, so anon is named outright. service_role is left alone
+-- deliberately -- the webhook/admin client needs it.
+revoke all on public.shop_menu_item from anon, public;
+grant select, insert, update, delete on public.shop_menu_item to authenticated;
+
 drop policy if exists shop_menu_item_read   on public.shop_menu_item;
 drop policy if exists shop_menu_item_insert on public.shop_menu_item;
 drop policy if exists shop_menu_item_update on public.shop_menu_item;
@@ -160,6 +182,7 @@ do $verify$
 declare
   v_n int;
   v_top text; v_kid text; v_co text;
+  v_verb text;
 begin
   -- 1. 🔴 RLS IS ON. A new table in public is born with it OFF and granted to
   --    authenticated, which is how shop_config sat world-readable for five
@@ -183,10 +206,20 @@ begin
     raise exception 'only % of 3 write policies gate on a permission key', v_n;
   end if;
 
-  -- 3. anon can reach nothing.
-  if has_table_privilege('anon', 'public.shop_menu_item', 'SELECT') then
-    raise exception 'anon can select shop_menu_item';
-  end if;
+  -- 3. anon can reach nothing, and `authenticated` can reach everything the
+  --    policies then filter. Checked per verb rather than on SELECT alone: the
+  --    default ACL this file now revokes granted ALL, so testing one verb
+  --    would have left three behind. Asserted on the GRANT rather than by
+  --    selecting as anon, because a blocked select and an empty table look
+  --    identical from the outside.
+  foreach v_verb in array array['SELECT', 'INSERT', 'UPDATE', 'DELETE'] loop
+    if has_table_privilege('anon', 'public.shop_menu_item', v_verb) then
+      raise exception 'anon still holds % on shop_menu_item', v_verb;
+    end if;
+    if not has_table_privilege('authenticated', 'public.shop_menu_item', v_verb) then
+      raise exception 'authenticated cannot % shop_menu_item; its policies would never fire', v_verb;
+    end if;
+  end loop;
 
   -- 4. 🔴 THE DEPTH GUARD WORKS, exercised on real rows and rolled back.
   select company_id into v_co from public.companies limit 1;
