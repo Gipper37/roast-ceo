@@ -67,21 +67,40 @@ begin
   -- 2. 🔴 CALLED AS THE ROLE. This is the check whose absence shipped the bug:
   --    a privilege test that reads the catalogue can agree with itself while
   --    the actual call raises 42501.
+  --    🔴 AND IT GIVES THE ROLE BACK BY ABORTING, NOT BY `RESET ROLE`.
+  --    The first version of this file used `reset role` and CI's
+  --    db-push-staging failed on the line AFTER the migration succeeded:
+  --        ERROR: permission denied for schema supabase_migrations
+  --        INSERT INTO supabase_migrations.schema_migrations(...)
+  --    `RESET ROLE` does not mean "go back to postgres". It reverts to the
+  --    SESSION role, and the Supabase CLI connects on a limited login role
+  --    ("Initialising login role...") and raises itself with SET ROLE. So the
+  --    reset stripped the CLI's own privileges and it could no longer record
+  --    the version it had just applied.
+  --
+  --    A SET LOCAL inside a subtransaction is undone when that subtransaction
+  --    ABORTS, so this block always ends by raising a sentinel and swallowing
+  --    it. The role is restored by the abort, whatever happened inside, and
+  --    nothing in the surrounding session is touched.
   begin
     select id into v_collection from public.collection limit 1;
     execute 'set local role authenticated';
     if v_collection is not null then
       execute 'select public.collection_is_reserved($1)' into v_result using v_collection;
     end if;
-    execute 'reset role';
+    raise exception 'ZZROLE_OK';
   exception
     when insufficient_privilege then
-      execute 'reset role';
       raise exception 'calling collection_is_reserved as authenticated raised insufficient_privilege; the grant did not take';
     when others then
-      execute 'reset role';
-      raise;
+      if sqlerrm <> 'ZZROLE_OK' then raise; end if;
   end;
+
+  -- The abort above must have given the role back. Said out loud, because the
+  -- failure mode it guards is silent until something else needs a privilege.
+  if current_user <> session_user and current_setting('role', true) = 'authenticated' then
+    raise exception 'the probe left the session as authenticated';
+  end if;
 
   -- 3. And the policies that need it are still the ones we think they are, so
   --    a future revoke has something to find.
