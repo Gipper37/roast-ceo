@@ -33,24 +33,34 @@
 --    case is refused -- so this cannot recurse, and a two-cycle in the data
 --    cannot either, because neither row would be a bag.
 --
--- 3. `build_product_name` stops recomposing a name nothing changed about.
---    This is a PREREQUISITE, not a bonus: the cascade refreshes products by
---    touching them, and that trigger fired on every update. It is not
---    idempotent, because `compile_product_name` title-cases the channel --
---    `initcap` over the global channel rows, which are stored lowercase, is
---    what makes `wholesale` read "Wholesale", and it makes `vip` read "Vip".
---    Social Hour UK's 43 VIP products are stored "- VIP", so touching them
---    renamed them, and `product_name` is the string QuickBooks matches an
---    invoice line on. Measured on prod: 43 of 992 group-derived products would
---    have been renamed by a write that changed nothing about their name.
+-- 🔴 A THIRD PART WAS WRITTEN AND THEN REMOVED, and the reason is worth
+-- keeping, because it was wrong in the one way that is hard to see: it was
+-- wrong about WHEN A TRIGGER FIRES.
 --
--- 🔴 WHAT THIS DELIBERATELY DOES NOT DO: fix the casing. "Vip" is still what a
--- product gets if its channel genuinely changes. Normalising the four global
--- channel rows to display case and dropping `initcap` would fix it and would
--- rename 9 live products on prod (4 UK "Vip" to "VIP", and 5 Social Hour
--- "100G"/"2LBS" to the "100g"/"2lbs" their own size rows say). That is a
--- decision about whose text wins and it renames rows a customer has seen on an
--- invoice, so it is written down rather than taken.
+-- The draft added an early return to `build_product_name` so that an update
+-- changing none of group_id, size or channel would not recompose the name. The
+-- stated reason was that this cascade's touch would otherwise rename things:
+-- `compile_product_name` title-cases the channel, the global channel rows are
+-- stored lowercase, and `initcap('vip')` is "Vip" while Social Hour UK's 43
+-- products are stored "- VIP".
+--
+-- The premise was false. Prod says:
+--     CREATE TRIGGER trg_build_product_name BEFORE INSERT OR UPDATE
+--       OF group_id, size, channel ON public.products
+-- `updated_at` is not in that list, so the cascade's touch NEVER fired the
+-- composer and nothing was ever at risk from it. The guard was unnecessary.
+--
+-- And it was harmful. `renameProductGroup` (products/actions.ts) propagates a
+-- renamed product to its variants by writing `update products set group_id =
+-- group_id` -- a self-assignment that fires the trigger precisely because
+-- group_id IS in its column list, while leaving the value alone.
+-- `merge_product_groups` does the same for the surviving name. The guard sees
+-- group_id unchanged and returns early, so RENAMING A PRODUCT WOULD HAVE
+-- STOPPED RENAMING ITS VARIANTS -- and product_name is what order pickers,
+-- pack-run labels and QuickBooks line matching all read.
+--
+-- The casing issue is real and is recorded on the open list. It needs fixing
+-- where it lives, not behind a guard that breaks a feature.
 --
 -- Functions patched from `pg_get_functiondef`, not retyped.
 
@@ -135,10 +145,21 @@ begin
   --
   -- `updated_at` is what is written because every other column here is derived
   -- from something; `handle_updated_record` would stamp it anyway.
+  --
+  -- 🔴 ACTIVE ONLY, and that is not an optimisation.
+  -- `update_product_total_cogs` opens with
+  --     IF COALESCE(NEW.is_active,true)=false AND COALESCE(OLD.is_active,true)=false
+  --        THEN RETURN NEW;
+  -- placed ABOVE `NEW.weight_lbs := v_weight`. So an archived variant's cached
+  -- weight CANNOT be refreshed by a touch -- and must not be. Its numbers are
+  -- deliberately frozen at the moment it was archived, which is what the UI
+  -- reads (`isArchived ? last_active_unit_cogs : total_unit_cogs`). Touching
+  -- them would be a write that changes nothing and pretends otherwise.
   update public.products p
      set updated_at = now()
-   where p.size = new.size_id
-      or p.size in (select c.size_id from public.size c where c.base_size_id = new.size_id);
+   where coalesce(p.is_active, true)
+     and (p.size = new.size_id
+      or p.size in (select c.size_id from public.size c where c.base_size_id = new.size_id));
 
   return null;
 end;
@@ -151,63 +172,31 @@ create trigger zza_cascade_size_weight
   after update of weight on public.size
   for each row execute function public.cascade_size_weight();
 
-CREATE OR REPLACE FUNCTION public.build_product_name()
- RETURNS trigger
- LANGUAGE plpgsql
-AS $function$
-DECLARE
-  v_name text;
-BEGIN
-  -- 🔴 NOTHING TO RECOMPOSE MEANS NOTHING TO WRITE.
-  --
-  -- The composed name is group - size - channel, and this fired on EVERY
-  -- update, so any unrelated write recomposed it. That is not idempotent,
-  -- because the composer title-cases the channel: `initcap` over the global
-  -- channel rows, which are stored lowercase, is what turns `wholesale` into
-  -- "Wholesale" -- and `vip` into "Vip". Social Hour UK's 43 VIP products are
-  -- stored as "- VIP", so ANY touch of those rows renamed them, and
-  -- `product_name` is the string QuickBooks matches an invoice line on.
-  --
-  -- Measured on prod before this change: 43 of 992 group-derived products
-  -- would be renamed by a write that changed nothing about their name.
-  --
-  -- So the guard is the honest statement of the dependency: recompose on
-  -- INSERT, and on UPDATE only when one of the three parts actually moved.
-  -- A cost refresh, a weight refresh, an is_active toggle or a price write no
-  -- longer touches the name.
-  --
-  -- This does NOT fix the casing itself -- "Vip" is still what a product gets
-  -- if its channel or size really does change. That is a separate decision
-  -- about whose text wins, the roaster's or ours, and it renames live rows.
-  IF TG_OP = 'UPDATE'
-     AND NEW.group_id             IS NOT DISTINCT FROM OLD.group_id
-     AND NEW.size                 IS NOT DISTINCT FROM OLD.size
-     AND NEW.channel              IS NOT DISTINCT FROM OLD.channel
-     AND NEW.source_consumable_id IS NOT DISTINCT FROM OLD.source_consumable_id
-     AND NEW.product_name         IS NOT DISTINCT FROM OLD.product_name THEN
-    RETURN NEW;
-  END IF;
-
-  v_name := public.compile_product_name(NEW.group_id, NEW.size, NEW.channel, NEW.source_consumable_id);
-  -- Null means this row's name is not group-derived (a resold consumable, or
-  -- no group): leave the stored name alone, as this function always has.
-  IF v_name IS NULL THEN
-    RETURN NEW;
-  END IF;
-  NEW.product_name := v_name;
-  RETURN NEW;
-END;
-$function$;
-
--- ── The six stale rows ─────────────────────────────────────────────────────
--- Touch them so `update_product_total_cogs` re-reads the size and refills the
--- cache. Scoped to rows that actually disagree, so this is a repair rather
--- than a 948-row rewrite, and it cannot rename anything now that
--- build_product_name leaves an unchanged name alone.
+-- ── The stale rows ─────────────────────────────────────────────────────────
+--
+-- 🔴 AND THERE ARE NONE, which is the correction this migration needed.
+--
+-- The header above says six products on prod cache the wrong weight. They do.
+-- Every one of them is ARCHIVED (`is_active = f`, checked: 26e88e4d,
+-- uk-be678eca, 34de1e7c, a50f94c5, 336d204f, uk-1d6700ae), and an archived
+-- variant's cached numbers are frozen BY DESIGN -- see the note on the cascade
+-- above. So they are not stale, they are historical, and touching them would
+-- do nothing: the trigger returns before the assignment.
+--
+-- The first draft of this file touched them anyway and then asserted the
+-- disagreement was gone, so its own verify raised and rolled the whole
+-- migration back -- taking 15, 16 and 17 with it, since db push stops at the
+-- first failure. A repair that cannot work, guarded by a check that proves it
+-- cannot, is worse than no repair.
+--
+-- Zero ACTIVE products disagree with their size today, so there is nothing to
+-- repair at all. The statement is kept, scoped to active rows, because it is
+-- the right thing to run on a database where one does.
 update public.products p
    set updated_at = now()
   from public.size s
  where s.size_id = p.size
+   and coalesce(p.is_active, true)
    and p.weight_lbs is distinct from s.weight;
 
 do $verify$
@@ -221,12 +210,19 @@ DECLARE
   v_name    text;
   v_pid     text;
 BEGIN
-  -- Every product's cached weight now agrees with its size.
+  -- Every ACTIVE product's cached weight agrees with its size.
+  --
+  -- 🔴 ACTIVE, and the first draft of this block said every product. All six
+  -- disagreeing rows on prod are archived, whose weight the trigger refuses to
+  -- refresh on purpose, so the unqualified count raised and rolled the whole
+  -- migration back -- taking 15, 16 and 17 with it. A verify that asserts
+  -- something the design forbids is not a check, it is a stop.
   select count(*) into v_stale
     from public.products p join public.size s on s.size_id = p.size
-   where p.weight_lbs is distinct from s.weight;
+   where coalesce(p.is_active, true)
+     and p.weight_lbs is distinct from s.weight;
   if v_stale > 0 then
-    raise exception '% products still disagree with their size''s weight', v_stale;
+    raise exception '% ACTIVE products still disagree with their size''s weight', v_stale;
   end if;
 
   -- Every case's weight agrees with its base.
@@ -241,19 +237,27 @@ BEGIN
   -- 🔴 And the cascade WORKS, exercised on real rows rather than asserted.
   -- A bag whose weight moves must carry its case and both their products with
   -- it. Done on a size this tenant owns, then put back.
-  select s.size_id into v_bag
+  -- 🔴 PICKED DETERMINISTICALLY, AND ON AN ACTIVE PRODUCT.
+  -- The draft used three unordered `limit 1` selects with no is_active filter.
+  -- Prod has a bag (size_5d679e8b96bb2286) with four cases, two of which carry
+  -- exactly one product each and ZERO active ones -- so a different plan would
+  -- have landed the probe on a case whose only variant is archived and raised
+  -- "the product on the case kept a stale weight" for the archived reason
+  -- rather than a real failure. An ORDER BY makes the choice repeatable; the
+  -- is_active filter makes it the right one.
+  select s.size_id, c.size_id, p.product_id, p.product_name
+    into v_bag, v_case, v_pid, v_name
     from public.size s
     join public.size c on c.base_size_id = s.size_id and c.units_per_case is not null
+    join public.products p on p.size = c.size_id and coalesce(p.is_active, true)
    where s.weight is not null
+   order by s.size_id, c.size_id, p.product_id
    limit 1;
 
   if v_bag is null then
-    raise notice 'no bag with a case built on it here, skipping the cascade check';
+    raise notice 'no bag with a case and an active product on it here, skipping the cascade check';
   else
-    select c.size_id into v_case from public.size c where c.base_size_id = v_bag limit 1;
     select weight into v_before from public.size where size_id = v_bag;
-    select p.product_id, p.product_name into v_pid, v_name
-      from public.products p where p.size = v_case limit 1;
 
     update public.size set weight = v_before * 2 where size_id = v_bag;
 
@@ -268,7 +272,13 @@ BEGIN
         raise exception 'the product on the case kept a stale weight: % against %',
           (select weight_lbs from public.products where product_id = v_pid), v_after;
       end if;
-      -- And the name did NOT churn, which is the whole reason part 3 is here.
+      -- And the name did not churn. 🔴 This assertion is now VACUOUS and is
+      -- kept deliberately: `trg_build_product_name` fires on UPDATE OF
+      -- group_id, size, channel, and the cascade writes only `updated_at`, so
+      -- the composer was never reachable from here. The draft read this
+      -- passing as evidence that its guard was needed; it was evidence of
+      -- nothing. Left in place as a tripwire in case the trigger's column list
+      -- ever widens.
       if (select product_name from public.products where product_id = v_pid) is distinct from v_name then
         raise exception 'touching a product renamed it: % became %',
           v_name, (select product_name from public.products where product_id = v_pid);
@@ -281,7 +291,14 @@ BEGIN
     end if;
   end if;
 
-  -- build_product_name kept the rest of its body.
+  -- 🔴 build_product_name must NOT have gained the guard this file's draft
+  -- added. It would stop `renameProductGroup`'s `set group_id = group_id`
+  -- touch from recomposing a variant's name, which is the only mechanism
+  -- propagating a product rename. Asserted so a revert of the revert fails.
+  if (select prosrc from pg_proc where oid = 'public.build_product_name'::regproc)
+     like '%NEW.group_id             IS NOT DISTINCT FROM OLD.group_id%' then
+    raise exception 'build_product_name carries the early-return guard; it breaks renameProductGroup';
+  end if;
   if (select prosrc from pg_proc where oid = 'public.build_product_name'::regproc)
      not like '%compile_product_name%' then
     raise exception 'build_product_name lost its composer call';

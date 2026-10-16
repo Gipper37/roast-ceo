@@ -18,9 +18,11 @@
 -- who opens the size and re-types 227 in the grams box tomorrow writes
 -- 0.5004497433817175 and the row MOVES. From 20261015000014 that is no longer
 -- a quiet one-row drift: the weight cascades to `uk-case6`, whose weight is
--- derived, and then touches all 95 products on the two sizes to refresh their
--- cached weight and cost chain. A no-op edit that triggers a cascade is worth
--- one migration to prevent.
+-- derived, and then touches the products on the two sizes to refresh their
+-- cached weight and cost chain. There are 95 of them, 61 active and 34
+-- archived; only the active ones can be refreshed, because an archived
+-- variant's numbers are frozen on purpose. A no-op edit that triggers a
+-- cascade is worth one migration to prevent.
 --
 -- WHY THE LITERAL. The note says to compute it from the same constant rather
 -- than hardcode it, and that is right in TypeScript. In SQL it is not
@@ -85,19 +87,31 @@ BEGIN
     end if;
   end if;
 
-  -- Every product on either size now caches the new weight.
+  -- Every ACTIVE product on either size now caches the new weight.
+  --
+  -- 🔴 ACTIVE, and the first draft said every product. `uk-227g` carries 74
+  -- products (47 active, 27 archived) and `uk-case6` carries 21 (14 active, 7
+  -- archived) -- 95 in all, 34 of them archived. An archived variant's cached
+  -- weight is frozen on purpose: `update_product_total_cogs` returns before
+  -- the assignment for a row that is inactive and was already inactive, which
+  -- is what keeps its last-active COGS readable. So the unqualified count
+  -- would have found 34 and raised, rolling this migration back and 17 with
+  -- it. See the same correction in 20261015000014.
   select count(*) into v_stale
     from public.products p
     join public.size s on s.size_id = p.size
    where (s.size_id = 'uk-227g' or s.base_size_id = 'uk-227g')
+     and coalesce(p.is_active, true)
      and p.weight_lbs is distinct from s.weight;
   if v_stale > 0 then
-    raise exception '% products on 227g or its case still cache the old weight', v_stale;
+    raise exception '% ACTIVE products on 227g or its case still cache the old weight', v_stale;
   end if;
 
-  raise notice '227g is now what the app writes; its case and % product(s) followed',
+  raise notice '227g is now what the app writes; its case and % active product(s) followed (% archived keep their frozen weight)',
     (select count(*) from public.products p join public.size s on s.size_id = p.size
-      where s.size_id = 'uk-227g' or s.base_size_id = 'uk-227g');
+      where (s.size_id = 'uk-227g' or s.base_size_id = 'uk-227g') and coalesce(p.is_active, true)),
+    (select count(*) from public.products p join public.size s on s.size_id = p.size
+      where (s.size_id = 'uk-227g' or s.base_size_id = 'uk-227g') and not coalesce(p.is_active, true));
 END;
 $verify$;
 
