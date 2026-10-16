@@ -45,32 +45,10 @@
 
 begin;
 
--- One definition of "this collection restricts who can buy", so the policy and
--- anything else that asks cannot drift apart.
-create or replace function public.collection_is_reserved(p_collection_id text)
-returns boolean
-language sql
-stable
-security definer
-set search_path to 'public', 'pg_temp'
-as $$
-  select exists (
-    select 1
-      from public.collection c
-     where c.id = p_collection_id
-       and (coalesce(array_length(c.exclusive_to_customer_ids, 1), 0) > 0
-         or coalesce(array_length(c.exclusive_to_chain_ids, 1), 0) > 0
-         or coalesce(array_length(c.excluded_from_customer_ids, 1), 0) > 0)
-  )
-$$;
-
-comment on function public.collection_is_reserved(text) is
-  'TRUE when a collection carries any of the three allowlists, i.e. when its membership decides who may buy. The one definition, used by product_group_collection''s write policies.';
-
--- SECURITY DEFINER and it reads `collection`, so it must not be callable by
--- the browser on its own: it would answer about another tenant's collection.
--- The policies below invoke it as the table owner.
-revoke all on function public.collection_is_reserved(text) from public;
+-- `collection_is_reserved()` is NOT defined here. It lives in
+-- `20261015000006`, with the three columns it reads, because
+-- `merge_product_groups` (20261015000009) needs the same answer and runs
+-- first. Defining it twice is how two halves of one rule come to disagree.
 
 -- ── The policies ──────────────────────────────────────────────────────────
 --

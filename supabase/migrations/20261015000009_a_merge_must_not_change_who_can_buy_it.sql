@@ -100,8 +100,35 @@ begin
     and coalesce(v_kill.excluded_from_customer_ids, '{}') @> coalesce(v_keep.excluded_from_customer_ids, '{}')
     and coalesce(v_keep.exclusive_to_chain_ids,     '{}') @> coalesce(v_kill.exclusive_to_chain_ids,     '{}')
     and coalesce(v_kill.exclusive_to_chain_ids,     '{}') @> coalesce(v_keep.exclusive_to_chain_ids,     '{}')
+    -- 🔴 AND THE COLLECTION AXIS, which this guard's first draft ignored while
+    -- the SAME RELEASE made it a visibility gate.
+    --
+    -- 20261015000006 put the three allowlists on `collection`, and the
+    -- storefront's rule is ALL-allow: every RESERVED collection a product is
+    -- in must admit the buyer. A merge retires the losing group and the
+    -- storefront folds its variants onto the survivor, judging them by the
+    -- SURVIVOR's collections -- so merging a product that sits on a reserved
+    -- shelf into one that does not publishes it, which is exactly the thing
+    -- the three arrays above are compared to prevent. Checking those and not
+    -- this left the hole open through a second door.
+    --
+    -- Only RESERVED collections are compared. An unrestricted shelf is silent
+    -- under ALL-allow, so differing on "Decaf" changes nobody's access and
+    -- refusing over it would block the ordinary tidy-up a merge exists for.
+    -- `collection_is_reserved` is the one definition, from 20261015000006.
+    and (
+      select coalesce(array_agg(pgc.collection_id order by pgc.collection_id), '{}')
+        from public.product_group_collection pgc
+       where pgc.group_id = p_keep_group
+         and public.collection_is_reserved(pgc.collection_id)
+    ) = (
+      select coalesce(array_agg(pgc.collection_id order by pgc.collection_id), '{}')
+        from public.product_group_collection pgc
+       where pgc.group_id = p_kill_group
+         and public.collection_is_reserved(pgc.collection_id)
+    )
   ) then
-    raise exception 'These two products are visible to different customers, so merging them would change who can buy one of them. Make the shop visibility the same on both, then merge.'
+    raise exception 'These two products are visible to different customers, so merging them would change who can buy one of them. Make the shop visibility and the reserved collections the same on both, then merge.'
       using errcode = 'check_violation';
   end if;
 
@@ -308,7 +335,22 @@ begin
     raise exception 'merge_product_groups lost the canonical pointer';
   end if;
 
-  raise notice 'a merge now refuses to change who can buy the product';
+  -- 3. 🔴 THE COLLECTION AXIS IS IN THERE. The first draft of this guard
+  --    compared only the three product-level arrays while the same release
+  --    made collection membership a visibility gate, so a merge could still
+  --    publish a reserved product through that door. Asserted by name,
+  --    because a future CREATE OR REPLACE that drops it would be a silent
+  --    revert of the half that was added last and is easiest to forget.
+  if v_def not like '%collection_is_reserved%' then
+    raise exception 'merge_product_groups does not compare reserved collections; a merge can still change who can buy';
+  end if;
+  -- And the predicate it depends on exists, since 20261015000006 defines it
+  -- and this file would otherwise fail only when somebody tried a merge.
+  if to_regprocedure('public.collection_is_reserved(text)') is null then
+    raise exception 'collection_is_reserved is missing; 20261015000006 must run before this';
+  end if;
+
+  raise notice 'a merge now refuses to change who can buy the product, including through a reserved collection';
 end $verify$;
 
 commit;
