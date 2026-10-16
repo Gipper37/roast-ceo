@@ -145,47 +145,29 @@ begin
     (select count(*) from public.collection);
 end $verify$;
 
--- ── "Is this collection reserved?", once ───────────────────────────────────
+-- ── "Is this collection reserved?" lives in 20261015000017 ────────────────
 --
--- It lives here, with the columns it reads, because three separate things need
--- the same answer and each one of them got it wrong on its own first:
---   20261015000009  a merge must refuse when the two products' RESERVED
---                   collections differ -- its first draft compared only the
---                   three product-level arrays and ignored this axis entirely,
---                   which the same release had just made a visibility gate.
---   20261015000017  the write policies on product_group_collection need
---                   shop.products_publish only for a reserved collection.
---   setProductsCollection (frontend) answers in a sentence before the policy
---                   returns zero rows.
--- Three copies of a rule about who can buy is how an offer and a charge come
--- to disagree, which has already happened twice in this schema.
+-- 🔴 IT WAS HERE, AND MOVING IT IS NOT A TIDY-UP. On 2026-10-16 CI's
+-- db-push-staging failed with
+--     ERROR: function public.collection_is_reserved(text) does not exist
+-- while applying 20261015000017, because THIS FILE WAS ALREADY APPLIED to
+-- staging by an earlier push, and `supabase db push` records a version and
+-- never re-applies an edited file. The function was added to this file after
+-- that push, so on staging it simply never existed -- and 017 names it inside
+-- a POLICY predicate, which Postgres resolves at CREATE POLICY time, so it
+-- failed hard rather than lazily.
 --
--- An EMPTY array is not a restriction, matching the column comments above: the
--- operator UI writes [] as readily as NULL when the last entry is removed, and
--- treating [] as "nobody" would retire a collection the moment a roaster
--- cleared the field.
-create or replace function public.collection_is_reserved(p_collection_id text)
-returns boolean
-language sql
-stable
-security definer
-set search_path to 'public', 'pg_temp'
-as $$
-  select exists (
-    select 1
-      from public.collection c
-     where c.id = p_collection_id
-       and (coalesce(array_length(c.exclusive_to_customer_ids, 1), 0) > 0
-         or coalesce(array_length(c.exclusive_to_chain_ids, 1), 0) > 0
-         or coalesce(array_length(c.excluded_from_customer_ids, 1), 0) > 0)
-  )
-$$;
-
-comment on function public.collection_is_reserved(text) is
-  'TRUE when a collection carries any of the three allowlists, i.e. when its membership decides who may buy. The one definition, used by merge_product_groups, product_group_collection''s write policies and the frontend.';
-
--- SECURITY DEFINER over another tenant's rows, so not for the browser. Its
--- callers are a trigger-side function and two policies, which run as the owner.
-revoke all on function public.collection_is_reserved(text) from public;
+-- 20261015000009 also names it, but inside a FUNCTION BODY, which Postgres
+-- resolves at CALL time -- so 009 applied cleanly and left
+-- merge_product_groups quietly broken on staging instead. That is the more
+-- dangerous half of the same mistake.
+--
+-- So the definition now lives in the earliest migration that was NOT yet
+-- applied anywhere and that needs it at apply time: 20261015000017. Still ONE
+-- definition, which was the point of putting it in a shared place to begin
+-- with. Do not copy it back here.
+--
+-- 🔴 THE RULE THIS BROKE: once a migration has been applied ANYWHERE, editing
+-- it changes nothing on that database. New behaviour needs a new file.
 
 commit;

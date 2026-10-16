@@ -115,7 +115,8 @@ begin
     -- Only RESERVED collections are compared. An unrestricted shelf is silent
     -- under ALL-allow, so differing on "Decaf" changes nobody's access and
     -- refusing over it would block the ordinary tidy-up a merge exists for.
-    -- `collection_is_reserved` is the one definition, from 20261015000006.
+    -- `collection_is_reserved` is the one definition, from 20261015000017
+    -- (it lived in 006 until 2026-10-16; see the note there).
     and (
       select coalesce(array_agg(pgc.collection_id order by pgc.collection_id), '{}')
         from public.product_group_collection pgc

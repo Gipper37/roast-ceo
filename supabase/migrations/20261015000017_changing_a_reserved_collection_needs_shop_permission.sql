@@ -45,6 +45,67 @@
 
 begin;
 
+-- ── "Is this collection reserved?", once ──────────────────────────────────
+--
+-- 🔴 MOVED HERE FROM 20261015000006 on 2026-10-16, and the reason matters:
+-- 006 had ALREADY been applied to staging when the function was added to it,
+-- and `supabase db push` never re-applies an edited file, so the function did
+-- not exist there. This file names it in a POLICY predicate, which Postgres
+-- resolves at CREATE POLICY time, so db-push-staging failed with
+--     ERROR: function public.collection_is_reserved(text) does not exist
+-- Defining it HERE, in the earliest file that was not yet applied anywhere,
+-- fixes staging and leaves a fresh database (prod) identical -- 006 no longer
+-- creates it, this does, and 009 only names it inside a function body which
+-- Postgres resolves at call time.
+--
+-- Still exactly ONE definition. Three things need the same answer -- 009's
+-- merge guard, the write policies below, and setProductsCollection in the
+-- frontend -- and three copies of a rule about who can buy is how an offer and
+-- a charge come to disagree.
+-- ── "Is this collection reserved?", once ───────────────────────────────────
+--
+-- It lives here, with the columns it reads, because three separate things need
+-- the same answer and each one of them got it wrong on its own first:
+--   20261015000009  a merge must refuse when the two products' RESERVED
+--                   collections differ -- its first draft compared only the
+--                   three product-level arrays and ignored this axis entirely,
+--                   which the same release had just made a visibility gate.
+--   20261015000017  the write policies on product_group_collection need
+--                   shop.products_publish only for a reserved collection.
+--   setProductsCollection (frontend) answers in a sentence before the policy
+--                   returns zero rows.
+-- Three copies of a rule about who can buy is how an offer and a charge come
+-- to disagree, which has already happened twice in this schema.
+--
+-- An EMPTY array is not a restriction, matching the column comments above: the
+-- operator UI writes [] as readily as NULL when the last entry is removed, and
+-- treating [] as "nobody" would retire a collection the moment a roaster
+-- cleared the field.
+create or replace function public.collection_is_reserved(p_collection_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path to 'public', 'pg_temp'
+as $$
+  select exists (
+    select 1
+      from public.collection c
+     where c.id = p_collection_id
+       and (coalesce(array_length(c.exclusive_to_customer_ids, 1), 0) > 0
+         or coalesce(array_length(c.exclusive_to_chain_ids, 1), 0) > 0
+         or coalesce(array_length(c.excluded_from_customer_ids, 1), 0) > 0)
+  )
+$$;
+
+comment on function public.collection_is_reserved(text) is
+  'TRUE when a collection carries any of the three allowlists, i.e. when its membership decides who may buy. The one definition, used by merge_product_groups, product_group_collection''s write policies and the frontend.';
+
+-- SECURITY DEFINER over another tenant's rows, so not for the browser. Its
+-- callers are a trigger-side function and two policies, which run as the owner.
+revoke all on function public.collection_is_reserved(text) from public;
+
+
 -- `collection_is_reserved()` is NOT defined here. It lives in
 -- `20261015000006`, with the three columns it reads, because
 -- `merge_product_groups` (20261015000009) needs the same answer and runs
