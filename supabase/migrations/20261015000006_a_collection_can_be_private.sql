@@ -63,8 +63,14 @@ comment on column public.collection.exclusive_to_customer_ids is
   'If NULL, this collection is not restricted to named customers. If set, only those customers may see its products in the wholesale shop. Unions with exclusive_to_chain_ids. An EMPTY array is not a restriction: the operator UI writes [] as readily as NULL when the last entry is removed, and treating [] as "nobody" would retire a collection the moment a roaster cleared the field.';
 comment on column public.collection.exclusive_to_chain_ids is
   'If NULL, this collection is not restricted by chain. If set, every store of a listed customer_chain may see its products. Unions with exclusive_to_customer_ids rather than narrowing it.';
+-- 🔴 This comment stated the OLD rule, which `bdb43d9c` deleted in the same
+-- batch -- so the database's own catalogue documented the hole as the design.
+-- It said the exclude list was "ignored outright when either allowlist above is
+-- set". It is not, any more: `groupAllowed` treats passing an allowlist as
+-- earning the right to be asked the next question, so "the chain, except that
+-- one store" is now sayable, and a contradiction resolves to nobody.
 comment on column public.collection.excluded_from_customer_ids is
-  'Customers who may NOT see this collection''s products. Ignored outright when either allowlist above is set, which is how the product-level column has read since 20260423000006.';
+  'Customers who may NOT see this collection''s products. Always consulted, including when an allowlist above is set: passing an allowlist earns the right to be asked this question rather than ending it, so "this chain except that store" is sayable. A customer named here and also named in an allowlist resolves to NOT allowed. An EMPTY array is not a restriction, same as the columns above.';
 
 comment on table public.collection is
   'A collection a product can appear in: Syrups, Hawaiian, Decaf. A product belongs to MANY. sort_order is the storefront menu order, and it also decides which collection wins when two of them carry a discount for the same customer. The exclusive_/excluded_ columns gate VISIBILITY in the wholesale shop, ALL-allow: a product is visible only if every restricted collection it is in admits the buyer.';
