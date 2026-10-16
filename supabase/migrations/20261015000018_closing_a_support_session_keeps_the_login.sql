@@ -123,32 +123,70 @@ BEGIN
     raise exception 'the is_active transition test is gone; every team UPDATE would end a session';
   end if;
 
-  -- 🔴 Exercised, not just grepped. A dev_session row is inserted and deleted,
-  -- and the user's sessions must survive it. Rolled back by the surrounding
-  -- transaction regardless, and auth.sessions is only READ.
+  -- 🔴 Exercised, not just grepped: a dev_session row is inserted and deleted,
+  -- and the user's sessions must survive it.
+  --
+  -- TWO THINGS HERE WERE WRONG, and CI's db-push-staging found the first on
+  -- 2026-10-16:
+  --
+  -- 1. The user id was INVENTED ('...dead'). `team.auth_user_id` is FK'd to
+  --    auth.users, so staging refused the insert with
+  --        23503 team_auth_user_id_fkey
+  --    The throwaway local cluster has no auth schema and no FK, so a local
+  --    rehearsal could not catch it. Now it takes a REAL user from the table,
+  --    preferring one that actually has a session so the count means
+  --    something, and skips when there is none.
+  --
+  -- 2. The old comment said the probe was "rolled back by the surrounding
+  --    transaction regardless". IT WAS NOT. This file carries its own
+  --    begin;/commit;, so every write in here COMMITS -- and had the patched
+  --    trigger been wrong, the probe would have ended a real developer's
+  --    sessions and committed that. A claim of safety that is false is worse
+  --    than no claim. The write half now runs inside a plpgsql block that
+  --    always rolls back to its implicit savepoint, via a sentinel exception,
+  --    so the probe can never leave anything behind either way.
   DECLARE
     v_company text;
     v_fac     text;
-    v_uid     uuid := '00000000-0000-4000-8000-00000000dead';
+    v_uid     uuid;
     v_before  int;
     v_after   int;
   BEGIN
     select company_id into v_company from public.companies limit 1;
-    if v_company is null then
-      raise notice 'no company here, skipping the row-level check';
+    -- A user who HAS a session makes before/after meaningful; any user at all
+    -- still proves the trigger does not fire. Both beat a fabricated uuid.
+    select t.auth_user_id into v_uid
+      from public.team t
+      join auth.sessions sess on sess.user_id = t.auth_user_id
+     where t.auth_user_id is not null
+     limit 1;
+    if v_uid is null then
+      select auth_user_id into v_uid from public.team
+       where auth_user_id is not null limit 1;
+    end if;
+
+    if v_company is null or v_uid is null then
+      raise notice 'no company or no auth user here, skipping the row-level check';
     else
       select facility_id into v_fac from public.facilities where company_id = v_company limit 1;
       select count(*) into v_before from auth.sessions where user_id = v_uid;
-      insert into public.team (team_member_id, auth_user_id, company_id, facility_id,
-                               name, email, role, is_active, login_kind, session_expires_at)
-      values ('zzverify-dev-session', v_uid, v_company, v_fac,
-              'zzverify', 'zzverify@example.com', 'company_admin', true,
-              'dev_session', now() + interval '1 hour');
-      delete from public.team where team_member_id = 'zzverify-dev-session';
-      select count(*) into v_after from auth.sessions where user_id = v_uid;
-      if v_after is distinct from v_before then
-        raise exception 'closing a support session changed the session count: % -> %', v_before, v_after;
-      end if;
+      BEGIN
+        insert into public.team (team_member_id, auth_user_id, company_id, facility_id,
+                                 name, email, role, is_active, login_kind, session_expires_at)
+        values ('zzverify-dev-session', v_uid, v_company, v_fac,
+                'zzverify', 'zzverify@example.com', 'company_admin', true,
+                'dev_session', now() + interval '1 hour');
+        delete from public.team where team_member_id = 'zzverify-dev-session';
+        select count(*) into v_after from auth.sessions where user_id = v_uid;
+        if v_after is distinct from v_before then
+          raise exception 'closing a support session changed the session count: % -> %', v_before, v_after;
+        end if;
+        -- Passed. Undo the probe's writes by failing deliberately.
+        raise exception 'ZZPROBE_OK';
+      EXCEPTION
+        WHEN others THEN
+          if sqlerrm <> 'ZZPROBE_OK' then raise; end if;
+      END;
     end if;
   END;
 
