@@ -170,7 +170,19 @@ $function$;
 
 do $verify$
 declare
-  v_co text; v_cust text; v_prod text; v_group text; v_company text;
+  -- 🔴 v_group is UUID, not text. product_groups.group_id is uuid, so
+  -- product_group_collection.group_id is uuid (line 58 of this file), and
+  -- inserting a text variable into it fails with
+  --     42804  column "group_id" is of type uuid but expression is of type text
+  -- CI's db-push-prod hit exactly that on 2026-10-16, at statement 17.
+  --
+  -- It passed db-push-staging only because staging had ALREADY applied an
+  -- earlier version of this file, and `supabase db push` records a version and
+  -- never re-applies an edited one -- so the fixed file never ran there. That
+  -- is the third time in this batch that editing an applied migration made
+  -- staging a false rehearsal. 20261015000004 declares it uuid correctly; this
+  -- one was written before that was understood.
+  v_co text; v_cust text; v_prod text; v_group uuid; v_company text;
   v_c1 text; v_c2 text; v_n int; v_bad int;
 begin
   -- 1. The rename carried its protection. A renamed table that lost its RLS
