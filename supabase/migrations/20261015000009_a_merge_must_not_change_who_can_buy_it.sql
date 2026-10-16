@@ -30,6 +30,57 @@
 
 begin;
 
+-- ── "Is this collection reserved?" ────────────────────────────────────────
+--
+-- 🔴 CREATED HERE because the guard BELOW asserts it exists, and on a database
+-- that is mid-batch there is nothing between here and there to create it.
+--
+-- The history, because it has now bitten three databases differently:
+--   * It started in 20261015000006. Staging had 006 applied BEFORE it was
+--     added, and `supabase db push` never re-applies an edited file, so on
+--     staging it never existed and 017's policies failed (42883).
+--   * So it moved to 017, the earliest file unapplied anywhere. That fixed
+--     staging and broke PROD, which had already applied 006..008: 009 runs
+--     next, its guard fires, and 017 is still eight files away (P0001).
+--   * So it is created HERE, where the thing that needs it is installed.
+--     017 keeps its copy, because on staging 009 is already applied and 017 is
+--     the only file that can still create it there.
+--
+-- Two CREATE OR REPLACE of the SAME body is not the divergence the one-
+-- definition rule is about: both are idempotent, they run in the same batch,
+-- and whichever lands second is a no-op. The body is copied from 017
+-- mechanically, not retyped.
+--
+-- 🔴 THE RULE ALL THREE FAILURES SHARE: once a migration has been applied
+-- ANYWHERE, editing it changes nothing on that database. New behaviour needs a
+-- NEW file, and "which databases have already applied this?" is the first
+-- question to ask before touching one.
+
+create or replace function public.collection_is_reserved(p_collection_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path to 'public', 'pg_temp'
+as $$
+  select exists (
+    select 1
+      from public.collection c
+     where c.id = p_collection_id
+       and (coalesce(array_length(c.exclusive_to_customer_ids, 1), 0) > 0
+         or coalesce(array_length(c.exclusive_to_chain_ids, 1), 0) > 0
+         or coalesce(array_length(c.excluded_from_customer_ids, 1), 0) > 0)
+  )
+$$;
+
+comment on function public.collection_is_reserved(text) is
+  'TRUE when a collection carries any of the three allowlists, i.e. when its membership decides who may buy. The one definition, used by merge_product_groups, product_group_collection''s write policies and the frontend.';
+
+-- SECURITY DEFINER over another tenant's rows, so not for the browser. Its
+-- callers are a trigger-side function and two policies, which run as the owner.
+revoke all on function public.collection_is_reserved(text) from public;
+
+
 CREATE OR REPLACE FUNCTION public.merge_product_groups(p_keep_group uuid, p_kill_group uuid, p_surviving_name text DEFAULT NULL::text, p_notes text DEFAULT NULL::text, p_variant_plan jsonb DEFAULT NULL::jsonb)
  RETURNS jsonb
  LANGUAGE plpgsql
@@ -348,7 +399,7 @@ begin
   -- And the predicate it depends on exists, since 20261015000006 defines it
   -- and this file would otherwise fail only when somebody tried a merge.
   if to_regprocedure('public.collection_is_reserved(text)') is null then
-    raise exception 'collection_is_reserved is missing; 20261015000006 must run before this';
+    raise exception 'collection_is_reserved is missing; it is created at the top of THIS file (20261015000009)';
   end if;
 
   raise notice 'a merge now refuses to change who can buy the product, including through a reserved collection';
