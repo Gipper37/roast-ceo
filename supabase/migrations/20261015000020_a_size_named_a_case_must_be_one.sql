@@ -61,8 +61,18 @@ begin;
 -- "2oz (Case of 80 - no label)" 80, "Box of 24" 24, "Carton of 4" 4,
 -- "12-pack" 12, "12 pack" 12, "6ct" 6, "24 count" 24.
 --
--- `[^0-9a-z]{0,4}` is what keeps "Caseload" out: the gap between the keyword
+-- `[^0-9a-z]{1,4}` is what keeps "Caseload" out: the gap between the keyword
 -- and the number may hold punctuation and spaces, never more letters.
+--
+-- 🔴 AT LEAST ONE separator, which is a deliberate blind spot rather than an
+-- oversight. With `{0,4}` "Case6" read as a case of 6, and the frontend twin's
+-- own test -- `does not mistake a number inside a word for a pack count`,
+-- which predates both functions -- had already decided the other way, on the
+-- grounds that "Case of 6" is a phrase and "Case6" is not. Overriding a
+-- decision somebody wrote down, as a side effect of a different change, is
+-- not a fix. So "Case6" and "Case12" are still read as bags and can still
+-- mint a fake case by name. The suffix form needs no separator, because there
+-- the number comes first and cannot be part of a preceding word.
 create or replace function public.size_name_states_pack_count(p_name text)
 returns int
 language sql
@@ -70,7 +80,7 @@ immutable
 as $$
   select coalesce(
     (substring(lower(coalesce(p_name, '')) from
-      '(?:case|box|carton|pack)[^0-9a-z]{0,4}(?:of[^0-9a-z]{0,4})?([0-9]+)'))::int,
+      '(?:case|box|carton|pack)[^0-9a-z]{1,4}(?:of[^0-9a-z]{1,4})?([0-9]+)'))::int,
     (substring(lower(coalesce(p_name, '')) from
       '([0-9]+)[[:space:]]*-?[[:space:]]*(?:pack|ct|count)\y'))::int
   )
@@ -146,7 +156,10 @@ begin
   end loop;
   for v_name in
     select unnest(array['8oz', '12 oz', '2lbs', '100g', 'Sample', 'Sampler', 'Pack',
-                        'Caseload 8oz', 'Compact 1lb', 'Impact 2oz', 'Select 8oz'])
+                        'Caseload 8oz', 'Compact 1lb', 'Impact 2oz', 'Select 8oz',
+                        -- the deliberate blind spot, asserted so a future
+                        -- widening has to argue with it rather than slip past
+                        'Case6', 'Showcase', 'Case12'])
   loop
     if public.size_name_states_pack_count(v_name) is not null then
       raise exception 'size_name_states_pack_count(%) read a pack count of % and should read none',
