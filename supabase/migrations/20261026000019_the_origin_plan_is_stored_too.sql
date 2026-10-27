@@ -154,10 +154,28 @@ stable
 security definer
 set search_path to 'public', 'pg_temp'
 as $function$
-  with s as (select * from public.roast_origin_plan where facility_id = p_facility_id),
-       l as (select * from public.roast_detail        where facility_id = p_facility_id)
-  select coalesce(s.origin, l.origin), v.col, v.s_val, v.l_val
-    from s full outer join l on l.origin is not distinct from s.origin
+  -- 🔴 NOT a FULL OUTER JOIN. The obvious shape here is
+  --     from s full outer join l on l.origin is not distinct from s.origin
+  -- and Postgres refuses it: "FULL JOIN is only supported with merge-joinable
+  -- or hash-joinable join conditions". IS NOT DISTINCT FROM is neither, and
+  -- one of the 60 production rows has a NULL origin, so plain `=` would drop
+  -- it. Staging caught this; it is why the rehearsal exists.
+  --
+  -- A UNION of the keys instead: UNION already treats NULLs as equal, so the
+  -- null-origin row appears exactly once, and LEFT JOIN has no such
+  -- restriction on its condition. Exact, and no sentinel value to collide
+  -- with a real origin name.
+  with keys as (
+    select origin from public.roast_origin_plan where facility_id = p_facility_id
+    union
+    select origin from public.roast_detail      where facility_id = p_facility_id
+  ),
+  s as (select * from public.roast_origin_plan where facility_id = p_facility_id),
+  l as (select * from public.roast_detail      where facility_id = p_facility_id)
+  select k.origin, v.col, v.s_val, v.l_val
+    from keys k
+    left join s on s.origin is not distinct from k.origin
+    left join l on l.origin is not distinct from k.origin
    cross join lateral (values
       ('in_stock_roasted',     s.in_stock_roasted,     l.in_stock_roasted),
       ('total_roasted',        s.total_roasted,        l.total_roasted),
