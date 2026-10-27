@@ -289,6 +289,7 @@ declare
   v_b      text;
   v_co     text;
   v_fac    text;
+  v_actor  text;
   v_n      int;
 begin
   -- The invariant moved, and both halves must be true.
@@ -309,19 +310,31 @@ begin
   select t.team_member_id, t.company_id, t.facility_id into v_term, v_co, v_fac
     from public.team t where coalesce(t.is_terminal,false) limit 1;
 
-  if v_term is null then
-    raise notice 'no terminal account to probe; behaviour assertions skipped';
+  -- 🔴 A REAL team member: team_member_id is NOT NULL on this table, and the
+  -- first version of this block inserted NULL. Staging has no terminal account
+  -- at all, so it took the skip branch below and the assertion never ran --
+  -- green rehearsal, and production refused it on the not-null constraint.
+  -- That is the rehearsal failing to rehearse, not the assertion being wrong.
+  select t.team_member_id into v_actor
+    from public.team t
+   where t.company_id = v_co and coalesce(t.is_active, true)
+     and not coalesce(t.is_terminal, false)
+   limit 1;
+
+  if v_term is null or v_actor is null then
+    -- Loud, because a silent skip is how this shipped broken the first time.
+    raise warning 'NO TERMINAL ACCOUNT OR NO ACTOR ON THIS DATABASE: the behaviour assertion did NOT run here. It runs where the data exists.';
   else
     insert into public.terminal_actor_session
       (company_id, terminal_member_id, team_member_id, actor_name, expires_at, device_id)
-    values (v_co, v_term, null, '__verify_a__', now() + interval '1 minute', '__verify_device_a__')
+    values (v_co, v_term, v_actor, '__verify_a__', now() + interval '1 minute', '__verify_device_a__')
     returning session_id into v_a;
 
     -- A SECOND device on the SAME account. This is what the old index forbade.
     begin
       insert into public.terminal_actor_session
         (company_id, terminal_member_id, team_member_id, actor_name, expires_at, device_id)
-      values (v_co, v_term, null, '__verify_b__', now() + interval '1 minute', '__verify_device_b__')
+      values (v_co, v_term, v_actor, '__verify_b__', now() + interval '1 minute', '__verify_device_b__')
       returning session_id into v_b;
     exception when unique_violation then
       raise exception 'two devices on one terminal account STILL cannot hold two sessions';
@@ -331,7 +344,7 @@ begin
     begin
       insert into public.terminal_actor_session
         (company_id, terminal_member_id, team_member_id, actor_name, expires_at, device_id)
-      values (v_co, v_term, null, '__verify_dup__', now() + interval '1 minute', '__verify_device_a__');
+      values (v_co, v_term, v_actor, '__verify_dup__', now() + interval '1 minute', '__verify_device_a__');
       raise exception 'one device was allowed two open sessions';
     exception when unique_violation then
       null;  -- correct
