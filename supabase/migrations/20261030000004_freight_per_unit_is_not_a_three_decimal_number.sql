@@ -1,5 +1,36 @@
 -- Freight per unit is not a three-decimal number.
 --
+-- 🔴 REDUCED 2026-10-31 AFTER IT TIMED OUT ON PROD. This migration used to
+-- carry a backfill as well. It now changes the FUNCTION ONLY; correcting the
+-- history lives in `scripts/backfill-freight-per-unit.sql`, which commits in
+-- batches. Why, because the reasoning is the point:
+--
+--   The backfill was a single no-op write to all 121 freight-carrying
+--   shipments. Each one gives `shipping_cost_unit` a genuinely new (unrounded)
+--   value, and `refresh_consumables_for_shipment` only skips when that column
+--   is unchanged -- so every row fires the full cascade:
+--   refresh_last_consumable_cost, refresh_consumable_stock, and
+--   recost_orders_for_consumable_purchase per consumable line, against 39,986
+--   order_details rows. Measured on prod by forcing one genuine rate change
+--   and rolling back: 8,966ms for the worst shipment (31 consumable lines),
+--   ~20ms for one with none -- about 285ms per consumable line. 277 lines are
+--   in scope, so ~81s at best, and the real run passed the 120s
+--   statement_timeout (57014) and rolled the whole release back.
+--
+--   Raising the timeout would only buy the other problem: ~2 minutes of write
+--   locks on shipment_received, consumable_inventory and order_details inside
+--   one transaction. That is the shape that has taken this app down before.
+--   A migration must be quick and must not be the thing that re-costs an
+--   entire order book.
+--
+-- So: this half is instant and stops the error at the source -- nothing stores
+-- a rounded rate from here on. The $236.22 already misstated across 96
+-- shipments is historical data, not schema, and it is corrected separately
+-- where it can be batched, resumed and watched.
+--
+-- ---------------------------------------------------------------------------
+-- WHY THE ROUND HAD TO GO (unchanged from the original):
+--
 -- calculate_shipping_per_unit() has always stored
 --
 --     shipping_cost_unit = ROUND(NEW.shipping_cost / v_total_weight, 3)
@@ -30,27 +61,8 @@
 -- database is guessing which numbers deserve precision before you have seen
 -- them.
 --
--- The backfill is a no-op write to shipping_cost, not a direct write to
--- shipping_cost_unit. trigger_update_shipping_unit_cost is AFTER INSERT OR
--- UPDATE with NO column list, so it fires on any update to the row and would
--- have overwritten a direct backfill with ROUND(...) again. Replacing the
--- function first and then touching the row makes the trigger itself write the
--- exact value, which is also what keeps the cascade honest:
--- trg_refresh_consumables_for_shipment fires on the resulting
--- shipping_cost_unit change and re-derives last_cost_unit, stock and order
--- costs; trg_propagate_shipping_cost re-costs the coffee origins. Those are
--- the figures that were wrong, so they have to move.
 --
--- What deliberately does NOT fire: trg_shipment_lot_recompute,
--- trg_shipment_release_here_first, trg_sync_bag_size_on_shipment_received and
--- trg_void_shipment_cascade are all scoped to date_received / voided, which
--- this does not touch. The expensive lot work stays asleep. Expected scope:
--- 121 rows, 277 consumable lines, 164 items, 37 coffee origins.
---
--- NOT fixed here, and still open: v_total_weight below is
--- SUM(coffee pounds) + SUM(consumable units), so on a shipment carrying both,
--- freight is divided by a quantity of nothing. That needs an allocation rule
--- and a decision, not a precision fix, and it is a separate change.
+-- See scripts/backfill-freight-per-unit.sql for the history correction.
 
 begin;
 
@@ -100,32 +112,5 @@ comment on function public.calculate_shipping_per_unit() is
   '$236.22 of freight across production. Round for display, never in the column. '
   'Known defect, unrelated to precision: v_total_weight sums coffee POUNDS and '
   'consumable UNITS, so a mixed shipment divides freight by a quantity of nothing.';
-
--- Re-derive every stored rate. A no-op write to shipping_cost, because the
--- trigger above owns shipping_cost_unit and would overwrite a direct write.
-update public.shipment_received
-   set shipping_cost = shipping_cost
- where shipping_cost is not null;
-
--- Every shipment that has a freight bill and a quantity to divide it by must
--- now multiply back to within a cent of what was actually paid. Before this
--- migration 119 rows failed that; if any still does, the backfill did not take
--- and the cascade behind it ran on wrong numbers, so refuse the release.
-do $$
-declare
-  v_bad integer;
-begin
-  select count(*)
-    into v_bad
-    from public.shipment_received
-   where shipping_cost is not null
-     and shipment_total_weight_units > 0
-     and abs(shipping_cost_unit * shipment_total_weight_units - shipping_cost) > 0.01;
-
-  if v_bad > 0 then
-    raise exception
-      'freight per unit still misstated on % shipment(s) after the backfill', v_bad;
-  end if;
-end $$;
 
 commit;
