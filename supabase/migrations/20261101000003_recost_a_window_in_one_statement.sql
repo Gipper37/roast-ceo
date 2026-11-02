@@ -14,7 +14,16 @@
 -- reach it. 6,644 aggregates becomes 13 ordered passes: the 6,644 lines hold
 -- 106 (product, facility) groups over 495 dates, but only THIRTEEN distinct
 -- (origin, facility) pairs, and it is the origins that cost anything.
--- Measured on production with every value consumed: 2m15s -> 1.63 s.
+-- Measured on production with every value consumed, both paths run back to
+-- back in ONE session so the comparison is under the same load:
+--
+--     6,644 scalar get_product_cogs_on_date calls   132,176 ms  (2m12s)
+--     this file's single statement                    1,671 ms
+--     again, for variance                             1,640 ms
+--
+-- All three total 438806.6414 over the same 6,644 lines, so that run doubles
+-- as a line-level equality check. The remaining 1.65 s is 83% consumable-cost
+-- scalars, which are not bulked here; see the previous migration's header.
 --
 -- 13 only if the shipment's lines are costed TOGETHER. An earlier draft left
 -- refresh_consumables_for_shipment's per-line loop alone, reasoning that the
@@ -46,12 +55,10 @@
 --     maintenance function: no trigger, no database caller, no frontend
 --     reference.
 --
--- refresh_consumables_for_shipment and propagate_shipping_to_consumable_orders
--- are deliberately NOT touched. They loop a shipment's consumable lines
--- calling recost_orders_for_consumable_purchase, which is batched below, and
--- the lines' order sets are disjoint by (product, facility, date) -- measured:
--- 3,981 distinct triples whether deduplicated per line or across the shipment
--- -- so there is nothing further to win by merging their windows.
+-- refresh_consumables_for_shipment IS rewritten here, for the reason above.
+-- propagate_shipping_to_consumable_orders is NOT, and does still loop its
+-- lines: it is wired to no trigger at all, so nothing fires it today. Left
+-- alone rather than changed blind; recorded.
 
 begin;
 
@@ -71,7 +78,10 @@ begin
 
   with lines as materialized (
     -- A line with no product, facility or date could never be costed: the
-    -- scalar returned NULL for it and the loop skipped it.
+    -- scalar returned NULL for it and the loop skipped it. A line with no
+    -- quantity would be written as NULL by `cogs * quantity`; all five callers
+    -- already exclude it, and matching them here closes the same hole for a
+    -- direct call.
     select od.order_detail_id, od.product_id, od.facility_id,
            od.order_date, od.quantity
       from public.order_details od
@@ -79,6 +89,7 @@ begin
        and od.product_id  is not null
        and od.facility_id is not null
        and od.order_date  is not null
+       and coalesce(od.quantity, 0) > 0
   ),
   keyset as materialized (
     -- Three parallel arrays, aggregated in ONE pass so the i-th elements are
@@ -93,6 +104,14 @@ begin
     -- ONE bulk call for the whole window: it collapses the key set to its
     -- distinct origins, so the roasted-cost passes scale on how many origins
     -- the roaster has, not on how many products or lines are in the window.
+    --
+    -- `as materialized` is load-bearing, not decoration. These rows are joined
+    -- to `lines` below; a plain single-reference CTE gets pulled up, and the
+    -- costing is then RE-PLANNED with `lines` driving instead of being
+    -- computed once -- measured on production at 9,278 ms against 1,671 ms,
+    -- identical rows and identical 438806.6414 either way. product_cogs_for_keys
+    -- being plpgsql is a second barrier (`return query` fills a tuplestore),
+    -- so this is belt and braces; keep both.
     select c.product_id, c.facility_id, c.order_date, c.cogs
       from keyset k
       cross join lateral public.product_cogs_for_keys(
@@ -147,7 +166,7 @@ begin
     return 0;
   end if;
 
-  with line as (
+  with line as materialized (
     -- A line with no price of its own contributes nothing to look up.
     select cp.consumable_purchase_id, cp.consumable_inventory_item,
            cp.facility_id, cp.shipment_id
@@ -155,7 +174,7 @@ begin
      where cp.consumable_purchase_id = any (p_consumable_purchase_ids)
        and coalesce(cp.cost_unit, 0) <> 0
   ),
-  win as (
+  win as materialized (
     select l.consumable_purchase_id, l.consumable_inventory_item, l.facility_id,
            (select sr.date_received
               from public.shipment_received sr
@@ -164,7 +183,15 @@ begin
              limit 1) as this_date
       from line l
   ),
-  bounded as (
+  bounded as materialized (
+    -- as materialized, ALL THREE, and it is not a style choice. Plain CTEs get
+    -- pulled up, and then these two target-list subqueries are copied into the
+    -- join filter below and evaluated once per CANDIDATE ORDER ROW instead of
+    -- once per line -- next_date seq-scans consumable_inventory_purchased, so
+    -- measured on production for 6KKKTKnn: SubPlan loops 8,601 and 4,507,
+    -- 1,628 ms, against loops=3 and 183 ms materialized. Same rows either way;
+    -- recost_order_details above materializes all three of its CTEs for the
+    -- same reason.
     -- Never received means it was never the price of record for anything.
     select w.consumable_purchase_id, w.consumable_inventory_item, w.facility_id,
            w.this_date,

@@ -66,6 +66,18 @@
 -- existing behaviour and it is preserved exactly: a roast event and a date
 -- event at the same instant are ordered roast-first, which is what `<=` means,
 -- and nothing is ever bucketed by day.
+--
+-- THAT TIE IS THE ONE THING THE PRODUCTION SWEEP CANNOT TEST. Of the 17,660
+-- costed lot-consumption rows, ZERO sit at exactly 00:00:00, so 4,271
+-- breakpoints exercise the midnight boundary exactly never -- exhaustive over
+-- the dates, silent on the data shape. Verified separately against a hand-built
+-- set instead: a roast at exactly midnight of the queried date (counted) beside
+-- an 08:00 roast the same day (not counted) = 100/10; three roasts tied at one
+-- timestamp = 60/6; a NULL roast_date never entering; a zero denominator giving
+-- NULL rather than an error; a pair with no roast rows; a NULL numerator and
+-- denominator skipped by sum(); and empty / all-NULL date arrays returning no
+-- rows. 15 cases, 0 disagreements. Ties DO occur for real -- 236 tied
+-- timestamps, 441 tie points, 0 disagreements.
 
 begin;
 
@@ -153,10 +165,35 @@ comment on function public.origin_roasted_cost_on_dates(text, text, date[]) is
 -- workload holding only THIRTEEN distinct (origin, facility) pairs, because
 -- products sharing an origin each paid for it again -- 8.3 s. Collapsing the
 -- whole key set first costs 13 passes, and scales on how many origins a
--- roaster has rather than how many products. Measured end to end on
--- production for the 6KKKTKnn freight edit -- 6,644 order lines, 3,981
--- distinct keys, 106 (product, facility) groups, 495 dates, every value
--- consumed: 1.63 s, against 2m15s today.
+-- roaster has rather than how many products.
+--
+-- Measured on production for the 6KKKTKnn freight edit -- 6,644 order lines,
+-- 3,981 distinct keys, 106 (product, facility) groups, 495 dates -- both paths
+-- run back to back in ONE session so the comparison is under the same load,
+-- every value consumed:
+--
+--     6,644 scalar get_product_cogs_on_date calls   132,176 ms  (2m12s)
+--     this bulk form                                  1,671 ms
+--     again, for variance                             1,640 ms
+--
+-- and all three total 438806.6414 over the same 6,644 lines, so that run is a
+-- line-level equality check as well as a timing.
+--
+-- Where the 1.65 s goes, each part measured separately on production:
+--
+--     13 bulked ordered passes for the roasted cost      309 ms
+--     get_coffee_cost_on_date fallback, 330 calls    )  coffee CTE
+--       (5,728 of 6,058 component rows served bulk) )    397 ms total
+--     get_consumable_cost_on_date, 8,069 calls          1,406 ms   <- 83%
+--
+-- So what remains is almost entirely the CONSUMABLE side, which is still one
+-- scalar call per consumable per key and would bulk the same way this file
+-- bulks coffee. Deliberately NOT done here: 1.65 s is well inside the 60 s an
+-- authenticated session gets, and the batch is kept small.
+--
+-- Building src ONCE across all 13 pairs instead of inside each pass was tried
+-- and rejected on measurement, not taste: 331 ms against 309 ms, identical
+-- checksum. The per-pass build is not the cost.
 -- ---------------------------------------------------------------------------
 create or replace function public.product_cogs_for_keys(
   p_product_ids  text[],
