@@ -55,6 +55,9 @@ function welcomeEmailHtml(adminName: string, companyName: string, trialDays: num
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light only" />
+  <meta name="supported-color-schemes" content="light only" />
+  <style>:root{color-scheme:light only;supported-color-schemes:light only;}</style>
   <title>Welcome to STRATA</title>
 </head>
 <body style="margin:0;padding:0;background:#f4f4f0;font-family:'Helvetica Neue',Helvetica,Arial,sans-serif;">
@@ -65,7 +68,7 @@ function welcomeEmailHtml(adminName: string, companyName: string, trialDays: num
           <!-- Header -->
           <tr>
             <td style="background:#ffffff;padding:28px 40px 20px;text-align:center;">
-              <img src="https://pwpslalerytymorcodlv.supabase.co/storage/v1/object/public/Branding/STRATA%20Full%20Logo%20-%20150ppi.png" alt="STRATA" width="180" style="display:block;margin:0 auto;" />
+              <img src="https://pwpslalerytymorcodlv.supabase.co/storage/v1/object/public/Branding/STRATA%20Full%20Logo%20-%20150ppi.png" alt="STRATA" width="240" style="display:block;margin:0 auto;" />
               <p style="margin:8px 0 0;font-size:11px;letter-spacing:2px;text-transform:uppercase;color:#999999;">Roaster Operating System</p>
             </td>
           </tr>
