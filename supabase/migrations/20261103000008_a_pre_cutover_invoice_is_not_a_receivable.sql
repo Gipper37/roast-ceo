@@ -44,19 +44,44 @@
 --     is empty). So this is a write only a migration can make, and one the app
 --     can never undo. That is the intent: imported history is permanent.
 --   * `trigger_update_order_metrics` is BEFORE INSERT OR UPDATE FOR EACH ROW
---     with no WHEN clause, so it WILL fire and re-derive order_total and
---     total_weight from the lines. For all 209 affected rows the stored
---     order_total already equals the sum of its lines' total_price exactly:
---     209 of 209, net drift $0.00. The recompute is a no-op in value. None of
---     the rows carries is_opening_balance, so no line-less stub is clobbered.
+--     with no WHEN clause, so it WILL fire and re-derive four things. Measured
+--     per column across all 209 rows rather than asserted in one breath:
+--       - `order_total`: **0 of 209 change, net drift $0.00.** The stored total
+--         already equals the sum of its lines' total_price exactly. A true
+--         no-op, and the only one of the four.
+--       - `total_weight`: **6 of 209 change, net +67.50 lbs.** All six are
+--         `qbimp-` imports whose stored weight already disagreed with their own
+--         lines (32→50, 11→20, 15.5→20, 53→80, 10.5→15, 5.5→10); the recompute
+--         corrects them to the line truth. No view or matview reads
+--         total_weight. Four functions name it -- calculate_shipment_totals_for,
+--         calculate_shipping_per_unit, update_order_aggregates and
+--         update_order_metrics itself -- and whether a future freight-per-unit
+--         recalculation on these six historical orders would shift an
+--         allocation is NOT traced here.
+--       - `area`: **192 of 209 change, every one NULL -> value.** 0 nulled out,
+--         0 changed from one value to another, so nothing is lost; it is a
+--         fill-in from the customer's current sales_area.
+--       - `customer_category`: 0 of 209 change.
+--     None of the rows carries is_opening_balance, so no line-less stub is
+--     clobbered.
 --   * `update_customer_metrics_on_order` recomputes customer cadence from
 --     orders filtered on order_status and is_opening_balance. It never reads
 --     `posted` or `invoice_state`, so its output cannot move.
 --   * `roast_plan_touch` queues one roast_plan_dirty row per facility per
 --     order. That table's PK is a sequence, not facility_id, so 209 rows just
 --     enqueue (one MCR facility) and the worker drains them.
---   * The order_status, order_date and payment_terms triggers are `UPDATE OF`
---     those columns; none is in this SET list, so none fires.
+--   * Two more BEFORE UPDATE FOR EACH ROW triggers have no `UPDATE OF` and no
+--     WHEN clause, so they fire too, and both are no-ops here:
+--     `trg_audit_update` (`handle_updated_record`) stamps `updated_at`, and
+--     `trg_order_status_changed_at` (`set_order_status_changed_at`) guards its
+--     whole body on `NEW.order_status IS DISTINCT FROM OLD.order_status`,
+--     which is false in this statement.
+--   * The triggers that really are `UPDATE OF` a column are
+--     `trg_order_status_consumable_sync` and
+--     `trg_sync_item_status_on_order_status` (order_status),
+--     `trg_propagate_order_date` (order_date) and
+--     `orders_payment_terms_available` (payment_terms). None of those columns
+--     is in this SET list, so none of the four fires.
 --   * `guard_demo_readonly` early-returns on a null uid, and MCR is not a demo.
 --
 -- AND IT CANNOT BE UNDONE BY THE CRON. `recompute_overdue_invoices` moves rows
