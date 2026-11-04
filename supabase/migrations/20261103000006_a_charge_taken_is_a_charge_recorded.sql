@@ -11,13 +11,15 @@
 --
 -- Prod, 2026-11-03: nobody has fallen in. 3 approved sales since the grant: 2 have
 -- ledger rows and the third is SH-000001, a shop checkout, which never writes this
--- ledger.
+-- ledger. And the Accounting page itself asks accounting.view, which neither role holds,
+-- so today neither can open the terminal's screen at all: only a direct call to the
+-- action reaches this. The grant and its ledger should still agree.
 --
 -- 🔴 NOT BY GRANTING THE ROASTMASTER payment.record. That key opens the record form
 -- and its receipts, and the owner's line for those is "roastery manager and up,
--- including accounting admin". The roastmaster may charge a card at the terminal,
--- so they get exactly the ledger row a real charge needs: method card, pointing at
--- an approved sale of their own company.
+-- including accounting admin". The roastmaster holds the charge key by an earlier
+-- decision, so they get exactly the ledger row a real charge needs: method card,
+-- pointing at an approved sale of their own company.
 --
 -- The carve-out fits a real charge and little else: the row must point at an approved
 -- sale of this company, for that sale's exact amount, for the customer of the order it
