@@ -32,10 +32,26 @@
 -- handle_order_detail_logic honours ahead of the catalogue price, so they
 -- price at zero and skip the customer-discount block. update_order_aggregates
 -- sums total_price, so the order total is the box's price and nothing is
--- counted twice. The box's own cost stays its own packaging (it has no recipe
--- and no source_consumable_id, so update_product_total_cogs gives it the
--- product_consumables total), and each content carries its own cost on its own
--- line. Nothing needed changing in the COGS engine.
+-- counted twice. Each content carries its own cost on its own line, which is
+-- where the COGS of a mixed case actually comes from. Nothing needed changing
+-- in the COGS engine.
+--
+-- 🔴 CORRECTED 2026-11-12. I first wrote here that "the box's own cost stays
+-- its own packaging", because update_product_total_cogs would give it the
+-- product_consumables total. THAT IS FALSE, and I read the live function to
+-- find out: on the non-coffee arm it runs
+--     v_consumable_cost_total := 0;
+--     v_total_cogs := COALESCE(NEW.unit_cost, 0) * v_units;
+-- and then sets total_coffee_cost and total_consumable_cost to NULL. So a
+-- bundle's packaging BOM contributes NOTHING to its cost, and the box's own
+-- cost is products.unit_cost -- a figure entered by hand. Ground truth: of 143
+-- non-coffee variants on prod, ZERO carry either breakdown column.
+--
+-- Deliberately NOT fixed here. update_product_total_cogs is the sole writer of
+-- six cost columns and its non-coffee arm serves all 143 of those variants;
+-- re-pointing it at the BOM for a side benefit is a far bigger change than
+-- this one. The consequence the UI must respect: a mixed case's own cost is
+-- hand-entered, so the contents editor must not imply its BOM feeds cost.
 --
 -- 🔴 THE BOX MUST WEIGH NOTHING. update_order_aggregates also sums
 -- roasted_weight into orders.total_weight, and handle_order_detail_logic sets
@@ -50,7 +66,8 @@ begin;
 -- Global (company_id null), like every other real type. A bundle is its own
 -- type and not a flavour of coffee, because update_product_total_cogs branches
 -- on the type's NAME (COALESCE(pt.product_type,'Coffee') = 'Coffee') and a
--- bundle must take the non-coffee arm: its cost is packaging, not green.
+-- bundle must take the non-coffee arm: a box has no recipe and no green to
+-- cost. See the correction in the header for what that arm actually does.
 insert into public.product_type (product_type_id, product_type, is_active, company_id)
 values ('ptype_bundle', 'Bundle', true, null)
 on conflict (product_type_id) do update
@@ -189,6 +206,15 @@ begin
     raise exception 'product_components.company_id must be the box''s company';
   end if;
 
+  -- The box must be a BUNDLE. Without this the guard validated company,
+  -- nesting and weight but never the parent's TYPE, while the explode trigger
+  -- branches on parent_order_detail_id and loops on product_id alone -- so ANY
+  -- variant given component rows exploded, a coffee variant included. The
+  -- feature is opt-in by type; make the data say so.
+  if v_parent.product_type is distinct from 'ptype_bundle' then
+    raise exception 'only a mixed case can have contents (% is %)', NEW.parent_product_id, coalesce(v_parent.product_type, 'untyped');
+  end if;
+
   -- One level only. The order-line explosion stops at the children it writes,
   -- so a box inside a box would ship with its own contents never exploded --
   -- stock silently short by everything in the inner box. Refuse it outright
@@ -198,6 +224,14 @@ begin
   end if;
   if exists (select 1 from public.product_components c
               where c.parent_product_id = NEW.child_product_id) then
+    raise exception 'a mixed case cannot contain another mixed case';
+  end if;
+  -- 🔴 And the same question UPWARDS. The two checks above only ever looked
+  -- DOWN -- is the child a box? -- so A containing X, then B containing A,
+  -- built two levels past a guard whose own comment says it refuses them.
+  -- A box that is already somebody's content cannot take content of its own.
+  if exists (select 1 from public.product_components c
+              where c.child_product_id = NEW.parent_product_id) then
     raise exception 'a mixed case cannot contain another mixed case';
   end if;
 
@@ -216,6 +250,86 @@ drop trigger if exists trg_guard_product_component on public.product_components;
 create trigger trg_guard_product_component
   before insert or update on public.product_components
   for each row execute function public.guard_product_component();
+
+-- ── 5b. The box has to STAY a weightless bundle ────────────────────────────
+--
+-- 🔴 The guard above reads the parent's type and its size's weight ONCE, when
+-- a component row is written. Nothing re-asked the question afterwards, so
+-- both of its decisions could be undone the next day by editing the variant:
+-- move a bundle onto a weighted size and every sale double-counts weight into
+-- orders.total_weight (the exact failure the weight rule exists to prevent),
+-- or re-type it away from 'ptype_bundle' and the type rule is bypassed by
+-- building the contents first and changing the type second.
+--
+-- A constraint that is only checked on the way in is not a constraint. This
+-- re-asks both, on the only statement that can break them.
+create or replace function public.guard_bundle_parent_stays_valid()
+returns trigger
+language plpgsql
+set search_path to 'public', 'pg_temp'
+as $fn$
+declare
+  v_weight numeric;
+begin
+  if not exists (select 1 from public.product_components c
+                  where c.parent_product_id = NEW.product_id) then
+    return NEW;
+  end if;
+
+  if NEW.product_type is distinct from 'ptype_bundle' then
+    raise exception 'this product has mixed-case contents; remove them before changing its type (was %, now %)',
+      coalesce(OLD.product_type, 'untyped'), coalesce(NEW.product_type, 'untyped');
+  end if;
+
+  select s.weight into v_weight from public.size s where s.size_id = NEW.size;
+  if coalesce(v_weight, 0) <> 0 then
+    raise exception 'a mixed case must use a size with no weight (size % carries % lbs); the weight comes from its contents', NEW.size, v_weight;
+  end if;
+
+  return NEW;
+end
+$fn$;
+
+drop trigger if exists trg_guard_bundle_parent_stays_valid on public.products;
+create trigger trg_guard_bundle_parent_stays_valid
+  before update of size, product_type on public.products
+  for each row
+  when (NEW.size         is distinct from OLD.size
+     or NEW.product_type is distinct from OLD.product_type)
+  execute function public.guard_bundle_parent_stays_valid();
+
+-- ── 5c. A component line is machine-written, so a person may not retype it ──
+--
+-- 🔴 trg_explode_bundle_upd returns null for any row that HAS a parent, so a
+-- child's quantity could be edited away from what the box implies and nothing
+-- reconciled it. The parent's next quantity edit then deletes and rebuilds,
+-- silently discarding the edit -- so the bad state was both reachable and
+-- quietly destroyed, which is the worst pair.
+--
+-- item_status is deliberately NOT in the list: the explode trigger itself
+-- propagates status to its children (`update ... set item_status = NEW.item_status
+-- where parent_order_detail_id = ...`), and packing a box packs its contents.
+-- The WHEN clause compares VALUES rather than trusting `update of`, which fires
+-- on the SET clause whether or not the value moved.
+create or replace function public.guard_order_detail_component_immutable()
+returns trigger
+language plpgsql
+set search_path to 'public', 'pg_temp'
+as $fn$
+begin
+  raise exception 'this line is the contents of a mixed case; change the case''s quantity instead';
+end
+$fn$;
+
+drop trigger if exists trg_guard_order_detail_component on public.order_details;
+create trigger trg_guard_order_detail_component
+  before update of quantity, product_id, amount_override on public.order_details
+  for each row
+  when (OLD.parent_order_detail_id is not null
+    and (NEW.quantity        is distinct from OLD.quantity
+      or NEW.product_id      is distinct from OLD.product_id
+      or NEW.amount_override is distinct from OLD.amount_override))
+  execute function public.guard_order_detail_component_immutable();
 
 -- ── 6. The explosion ───────────────────────────────────────────────────
 -- SECURITY DEFINER because the component lines must be written for every
@@ -311,5 +425,80 @@ drop trigger if exists trg_explode_bundle_upd on public.order_details;
 create trigger trg_explode_bundle_upd
   after update of quantity, product_id, item_status on public.order_details
   for each row execute function public.trg_explode_bundle_order_line();
+
+-- ── 7. Verify ──────────────────────────────────────────────────────────
+--
+-- Each of these FAILS if the thing it names is absent -- which is the point: a
+-- block that can only pass tells me nothing. Four of these guards exist only
+-- because the first cut of this migration shipped without them, so they are
+-- exactly the lines a later edit would drop without noticing.
+--
+-- 🔴 The prosrc checks below are on raise-message text, and prosrc includes a
+-- function's own COMMENTS, so a comment quoting one of these strings would
+-- satisfy the check falsely. They are paired with pg_trigger checks, which
+-- cannot be faked by a comment, for that reason.
+do $verify$
+declare
+  v_missing text := '';
+  v_src     text;
+begin
+  if not exists (select 1 from information_schema.tables
+                  where table_schema = 'public' and table_name = 'product_components') then
+    v_missing := v_missing || ' product_components(table)';
+  end if;
+  if not exists (select 1 from information_schema.columns
+                  where table_schema = 'public' and table_name = 'order_details'
+                    and column_name = 'parent_order_detail_id') then
+    v_missing := v_missing || ' order_details.parent_order_detail_id';
+  end if;
+  if not exists (select 1 from public.permissions where permission_id = 'product.bundle_manage') then
+    v_missing := v_missing || ' permission(product.bundle_manage)';
+  end if;
+
+  -- The three guards and the two explode triggers, by name.
+  if not exists (select 1 from pg_trigger
+                  where tgrelid = 'public.product_components'::regclass
+                    and tgname = 'trg_guard_product_component' and not tgisinternal) then
+    v_missing := v_missing || ' trg_guard_product_component';
+  end if;
+  if not exists (select 1 from pg_trigger
+                  where tgrelid = 'public.products'::regclass
+                    and tgname = 'trg_guard_bundle_parent_stays_valid' and not tgisinternal) then
+    v_missing := v_missing || ' trg_guard_bundle_parent_stays_valid';
+  end if;
+  if not exists (select 1 from pg_trigger
+                  where tgrelid = 'public.order_details'::regclass
+                    and tgname = 'trg_guard_order_detail_component' and not tgisinternal) then
+    v_missing := v_missing || ' trg_guard_order_detail_component';
+  end if;
+  if (select count(*) from pg_trigger
+       where tgrelid = 'public.order_details'::regclass and not tgisinternal
+         and tgname in ('trg_explode_bundle_ins', 'trg_explode_bundle_upd')) <> 2 then
+    v_missing := v_missing || ' explode_triggers';
+  end if;
+
+  -- The two directions of the nesting question, and the type gate. These are
+  -- what the first cut got wrong, so name them individually.
+  select p.prosrc into v_src from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'guard_product_component';
+  if v_src is null then
+    v_missing := v_missing || ' guard_product_component(function)';
+  else
+    if v_src not like '%c.parent_product_id = NEW.child_product_id%' then
+      v_missing := v_missing || ' nesting_check_downward';
+    end if;
+    if v_src not like '%c.child_product_id = NEW.parent_product_id%' then
+      v_missing := v_missing || ' nesting_check_upward';
+    end if;
+    if v_src not like '%only a mixed case can have contents%' then
+      v_missing := v_missing || ' parent_type_gate';
+    end if;
+  end if;
+
+  if v_missing <> '' then
+    raise exception 'mixed-case migration incomplete, missing:%', v_missing;
+  end if;
+end
+$verify$;
 
 commit;
