@@ -118,7 +118,20 @@ BEGIN
                  AND o.invoice_number  IS NULL
                  AND o.invoice_sent_at IS NULL
                  AND o.shop_order_ref  IS NULL
-                 AND NOT COALESCE(o.is_legacy_import, false)) THEN
+                 AND NOT COALESCE(o.is_legacy_import, false)
+                 -- 🔴 THE REASON CANNOT ANSWER "HAS ANYONE BEEN BILLED". It
+                 -- records what closed the document FIRST, and the CASE that
+                 -- writes it ranks 'delivered' above 'paid' because delivery
+                 -- comes first in the real workflow. So a delivered order
+                 -- whose payment was recorded still reads 'delivered' -- the
+                 -- three prod orders this carve-out's own comment names are
+                 -- exactly those, one of them carrying $91.10. Ask the money.
+                 AND o.paid_at IS NULL
+                 AND COALESCE(o.invoice_state, '') NOT IN ('paid', 'partial')
+                 AND NOT EXISTS (SELECT 1 FROM public.invoice_payment_allocations a
+                                   JOIN public.invoice_payments ip ON ip.payment_id = a.payment_id
+                                  WHERE a.order_id = o.order_id
+                                    AND ip.voided_at IS NULL)) THEN
     RETURN NEW;
   END IF;
 
@@ -250,10 +263,23 @@ begin
   end if;
 
   -- (a) MUST PASS: the true-up's own four columns, on its own target set.
+  --
+  -- 🔴 THE VALUES HAVE TO MOVE. Every guard here tests IS DISTINCT FROM, so
+  -- `set total_price = total_price` passes whether or not the carve-out
+  -- exists -- which is what this probe was, and it would have reported green
+  -- on a batch that had silently lost the carve-out altogether.
+  --
+  -- 🔴 And set the backfill flag first, or guard_script_reprice refuses the
+  -- write for a reason that has nothing to do with what is being proven: psql
+  -- carries no JWT, and a probe that errors for the wrong reason is not a
+  -- result.
   begin
+    perform set_config('app.allow_price_backfill', 'on', true);
     update public.order_details
-       set total_price = total_price, list_price_total = list_price_total,
-           unit_price_at_sale = unit_price_at_sale, discount_amount = discount_amount
+       set unit_price_at_sale = coalesce(unit_price_at_sale, 0) + 0.01,
+           list_price_total   = coalesce(list_price_total, 0) + 0.01 * quantity,
+           total_price        = coalesce(total_price, 0) + 0.01 * quantity,
+           discount_amount    = coalesce(discount_amount, 0)
      where order_detail_id = v_line;
     raise exception 'PROBE_ROLLBACK';
   exception when others then

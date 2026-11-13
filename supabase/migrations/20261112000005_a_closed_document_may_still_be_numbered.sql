@@ -209,8 +209,16 @@ begin
        and o.order_status not in ('Delivered', 'Shipped')
        and o.voided_at is null
        and o.written_off_at is null
-       and o.paid_at is null
-       and coalesce(o.invoice_state, '') not in ('paid', 'partial', 'void')
+       -- 🔴 DO NOT ADD `paid_at is null` OR AN invoice_state TEST HERE. This
+       -- is an AFTER trigger on the payment row, and voidPayment voids the
+       -- payment FIRST and only then recomputes the order's A/R state, so at
+       -- this instant the order still reads paid_at / invoice_state='paid'
+       -- whatever the truth is one statement later. Either term makes the
+       -- release match nothing, for ever: the trigger is WHEN (voided_at went
+       -- from null) and never gets a second chance. The live-allocation test
+       -- below asks the real question -- is any un-voided payment still
+       -- claiming this order -- and asks it about rows that are already
+       -- correct when this runs.
        and not exists (
              select 1 from public.invoice_payment_allocations a2
                join public.invoice_payments p2 on p2.payment_id = a2.payment_id
@@ -293,11 +301,14 @@ grant execute on function public.order_document_is_closed(text) to authenticated
 -- exists for -- delivered, never billed -- whose arithmetic may still be
 -- resolved, and must be, because that is what finalize_invoice does at the
 -- moment of numbering.
+-- SECURITY INVOKER: every caller is itself a DEFINER trigger or function, so
+-- it still sees the row it is deciding about; as an RPC it is bounded by RLS
+-- rather than confirming another tenant's order ids exist.
 create or replace function public.order_figures_are_final(p_order_id text)
 returns boolean
 language sql
 stable
-security definer
+security invoker
 set search_path to 'public', 'pg_temp'
 as $fn$
   select coalesce(
@@ -306,6 +317,16 @@ as $fn$
           or o.invoice_sent_at is not null
           or o.shop_order_ref  is not null
           or coalesce(o.is_legacy_import, false)
+          -- 🔴 MONEY IS A FIGURE THE CUSTOMER HAS BEEN SHOWN, AND THE REASON
+          -- CANNOT SAY SO. The reason records what closed the document
+          -- FIRST, and delivery is ranked above payment because delivery
+          -- comes first in the real workflow -- so a delivered-then-paid
+          -- order reads 'delivered' and would otherwise still be repriced.
+          -- Three prod orders are in exactly that state today, one carrying
+          -- $91.10. Owner, 2026-11-12: "if a payment has been recorded it
+          -- shouldn't be editable."
+          or o.paid_at is not null
+          or coalesce(o.invoice_state, '') in ('paid', 'partial')
           or coalesce(o.document_closed_reason, '') not in ('delivered', 'shipped'))
        from public.orders o
       where o.order_id = p_order_id),
@@ -375,6 +396,11 @@ BEGIN
               OR OLD.invoice_sent_at IS NOT NULL
               OR OLD.shop_order_ref  IS NOT NULL
               OR COALESCE(OLD.is_legacy_import, false)
+              -- The money terms, for the reason order_figures_are_final
+              -- carries them: the reason says what closed the document
+              -- first, and delivery outranks payment.
+              OR OLD.paid_at IS NOT NULL
+              OR COALESCE(OLD.invoice_state, '') IN ('paid', 'partial')
               OR COALESCE(OLD.document_closed_reason, '') NOT IN ('delivered', 'shipped'));
     IF (NEW.customer_id      IS DISTINCT FROM OLD.customer_id)
     OR (NEW.order_date       IS DISTINCT FROM OLD.order_date)
@@ -527,7 +553,10 @@ begin
     raise warning 'NO CLOSED, NEVER-BILLED ORDER ON THIS DATABASE — the tax carve-out is UNPROVEN here, not proven';
   else
     begin
-      update public.orders set tax_amount = coalesce(tax_amount, 0) where order_id = v_free;
+      -- 🔴 IT HAS TO MOVE. The guard tests IS DISTINCT FROM, so writing a
+      -- column its own current value proves nothing: `= coalesce(tax_amount,0)`
+      -- passed whether or not the carve-out existed.
+      update public.orders set tax_amount = coalesce(tax_amount, 0) + 0.01 where order_id = v_free;
       raise exception 'PROBE_ROLLBACK';
     exception when others then
       if SQLERRM <> 'PROBE_ROLLBACK' then

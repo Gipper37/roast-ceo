@@ -112,4 +112,15 @@ begin
   end if;
 end $$;
 
+-- 🔴 THE COMMENT IS THE RECORD, AND CREATE OR REPLACE KEEPS THE OLD ONE.
+-- Same oid, so both of these still ended "Refuses on a posted invoice." --
+-- which this migration has just made false. Anyone reading \df+ or a schema
+-- dump to decide whether a bench-printed order may take a discount would get
+-- the pre-batch answer from the database itself.
+comment on function public.recompute_order_tax(text) is
+  'Resolves an order''s tax the way finalize_invoice resolves it at the moment of numbering. Refuses once the customer has been shown the figures -- see order_figures_are_final -- NOT merely once the invoice has been printed: a delivered order nobody has billed must still be able to resolve its tax, or it is numbered and issued untaxed.';
+
+comment on function public.apply_order_discount(text, text, numeric) is
+  'Applies an order-level discount and re-derives every number the invoice shows. Refuses once the customer has been shown the figures -- see order_figures_are_final -- NOT merely once the invoice has been printed: the warehouse prints the invoice before the van loads, and that print must not freeze the order.';
+
 commit;

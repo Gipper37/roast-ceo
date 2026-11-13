@@ -8,9 +8,17 @@
 -- 🔴 IT HAS ALREADY HAPPENED ONCE. One prod order is Canceled with $360 still
 -- sitting at the gateway: the order is dead, the invoice is gone from A/R, and
 -- the customer's bank still has their money with nothing on any screen saying
--- so. 33 live orders hold $28,361.26 that this protects -- measured with the
--- per-order arithmetic below, which is nearly double what a per-transaction
--- sum could see.
+-- so. 31 live orders hold $12,669.83 that this protects.
+--
+-- 🔴 THAT FIGURE READ $28,361.26 UNTIL THE ARITHMETIC WAS CHECKED, AND THE
+-- EXTRA WAS NOT COVERAGE -- IT WAS THE SAME MONEY COUNTED TWICE. Counting
+-- terminal holds beside the allocations they had already become inflated the
+-- total to nearly double, and the figure goes into the refusal the roaster
+-- reads, to the cent. The per-order arithmetic is still the right one -- it
+-- finds one order a per-transaction sum cannot see, because one charge can
+-- pay several invoices -- but the gain was one order, not sixteen thousand
+-- dollars. A dedup is not a speedup and a bigger number is not more
+-- protection: price what REMAINS against what is actually at the gateway.
 --
 -- WHY THE RULE FALLS OUT OF THE MONEY RATHER THAN BEING IMPOSED ON IT.
 -- A hand-entered payment -- a cheque, cash, a card run on the countertop
@@ -42,40 +50,84 @@ begin;
 -- server action, which Next masks in a production build. If the screen's
 -- check and the guard's check were written twice they would drift, and the
 -- drift would show up as a button that fails or a refusal that never fires.
+-- 🔴 THE THREE TERMS MUST BE DISJOINT, AND THE CLAMP GOES ROUND THE WHOLE
+-- SUM, NOT ROUND ONE TERM. One charge is visible in three places -- as an
+-- allocation once it is filed as a payment, as a terminal hold that says
+-- which orders it covers, and as the raw transaction -- so the same dollar
+-- is easy to count twice, and a refund clamped inside its own term nets
+-- against nothing. Both mistakes were in the first draft of this function:
+-- 26 of 31 prod holds name a transaction that is ALREADY a live payment, so
+-- it told the roaster to refund roughly double; and five name a DECLINED
+-- sale, which would have made two delivered prod orders permanently
+-- impossible to cancel, void or delete over money the gateway never took.
+--
+-- 🔴 charge_hold_is_live IS THE PREDICATE, AND IT ALREADY EXISTED
+-- (20261103000007). A hold is live while the charge is unanswered, or
+-- approved and not yet filed as an allocated payment -- which is exactly
+-- "not already counted by term (a)". Writing the test again here is how the
+-- two drift.
+--
+-- SECURITY INVOKER on purpose. Inside guard_void_needs_refund (which is
+-- DEFINER) this runs as the owner and sees everything, so the guard can
+-- never be blinded; called as an RPC by the orders list it is bounded by
+-- RLS, so a signed-in user cannot read another tenant's amounts -- or learn
+-- that one of their order ids exists -- by guessing. Every table it reads is
+-- company-scoped and granted to authenticated, so the screen still sees its
+-- own tenant whole.
 create or replace function public.order_gateway_money_cents(p_order_ids text[])
 returns table (order_id text, cents bigint)
 language sql
 stable
-security definer
+security invoker
 set search_path to 'public', 'pg_temp'
 as $fn$
   select o.order_id,
-         coalesce((select sum(a.amount_cents)
-                     from public.invoice_payment_allocations a
-                     join public.invoice_payments p on p.payment_id = a.payment_id
-                    where a.order_id = o.order_id and a.company_id = o.company_id
-                      and p.voided_at is null
-                      and p.payment_transaction_id is not null), 0)
-       + coalesce((select sum(h.amount_cents)
-                     from public.terminal_charge_holds h
-                    where h.order_id = o.order_id), 0)
-       + greatest(coalesce((select sum(case
-                   when t.type = 'sale'
-                    and (t.status in ('approved', 'pending') or t.settled) then  t.gross_amount_cents
-                   when t.type = 'refund' and t.status = 'approved'        then -t.gross_amount_cents
-                   else 0 end)
-              from public.payment_transactions t
-             where t.order_id = o.order_id and t.company_id = o.company_id
-               and not exists (select 1 from public.invoice_payments p2
-                                where p2.payment_transaction_id = t.payment_transaction_id
-                                  and p2.voided_at is null)), 0), 0)
+         greatest(
+           -- (a) card money already filed as a payment and claimed by THIS order.
+           coalesce((select sum(a.amount_cents)
+                       from public.invoice_payment_allocations a
+                       join public.invoice_payments p on p.payment_id = a.payment_id
+                      where a.order_id = o.order_id and a.company_id = o.company_id
+                        and p.voided_at is null
+                        and p.payment_transaction_id is not null), 0)
+           -- (b) a charge still standing at the gateway, split per order by its
+           --     holds. Dead holds -- declined, or already filed as (a) -- are
+           --     not money anyone is holding.
+         + coalesce((select sum(h.amount_cents)
+                       from public.terminal_charge_holds h
+                      where h.order_id = o.order_id
+                        and public.charge_hold_is_live(h.payment_transaction_id)), 0)
+           -- (c) a charge filed on the order that became neither. Holds are
+           --     authoritative about the split, so a charge that has any is
+           --     counted there and not again here.
+         + coalesce((select sum(t.gross_amount_cents)
+                       from public.payment_transactions t
+                      where t.order_id = o.order_id and t.company_id = o.company_id
+                        and t.type = 'sale'
+                        and (t.status in ('approved', 'pending') or t.settled)
+                        and not exists (select 1 from public.invoice_payments p2
+                                         where p2.payment_transaction_id = t.payment_transaction_id
+                                           and p2.voided_at is null)
+                        and not exists (select 1 from public.terminal_charge_holds h2
+                                         where h2.payment_transaction_id = t.payment_transaction_id)), 0)
+           -- (d) less whatever has already gone back. A PARTIAL refund leaves
+           --     the payment standing, so this has to net against (a), not be
+           --     clamped away inside a term of its own.
+         - coalesce((select sum(t.gross_amount_cents)
+                       from public.payment_transactions t
+                      where t.order_id = o.order_id and t.company_id = o.company_id
+                        and t.type = 'refund' and t.status = 'approved'), 0)
+         , 0)::bigint
     from public.orders o
    where o.order_id = any(p_order_ids)
 $fn$;
 
 comment on function public.order_gateway_money_cents(text[]) is
-  'How much of the customer''s money the payment gateway is still holding for each of these orders. Measured per ORDER -- live card allocations, plus terminal holds, plus any charge filed on the order that never became a payment -- because one card charge can pay several invoices and payment_transactions.order_id names only the first. Counts a charge as live when it is approved, unanswered, or settled whatever its row status says. Read by guard_void_needs_refund, and by the orders list before a bulk cancel, so the screen and the guard cannot disagree.';
+  'How much of the customer''s money the payment gateway is still holding for each of these orders, net of refunds already made. Measured per ORDER -- live card allocations, plus LIVE terminal holds (charge_hold_is_live), plus any charge filed on the order that became neither -- because one card charge can pay several invoices and payment_transactions.order_id names only the first. The three terms are disjoint on purpose: a hold stops being live the moment its charge is filed as an allocated payment, so nothing is counted twice. Read by guard_void_needs_refund, and by the orders list before a bulk cancel, so the screen and the guard cannot disagree.';
 
+-- 🔴 `revoke from public, anon` does NOT revoke from authenticated, which is
+-- why the grant below is the whole access story for a signed-in user. It is
+-- safe to give because the function is INVOKER: RLS answers for it.
 revoke all on function public.order_gateway_money_cents(text[]) from public, anon;
 grant execute on function public.order_gateway_money_cents(text[]) to authenticated;
 
