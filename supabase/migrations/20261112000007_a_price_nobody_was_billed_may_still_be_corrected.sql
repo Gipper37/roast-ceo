@@ -50,6 +50,20 @@ BEGIN
     RETURN COALESCE(NEW, OLD);
   END IF;
 
+  -- 🔴 THE QUICKBOOKS IMPORTER BUILDS ITS HEADERS 'Delivered' AND INSERTS THE
+  -- LINES AS A SECOND STATEMENT, so once a header stamps closed on INSERT
+  -- every line of every imported invoice is refused -- nothing imports. And
+  -- revertQbImport deletes children first by design, so a half-landed batch
+  -- cannot be undone through the product either. Imported history is already
+  -- unreachable from every screen and refused by finalize_invoice, and
+  -- guard_order_invoice_columns and handle_order_detail_logic both carve it
+  -- out exactly here; this guard was the one that did not.
+  IF EXISTS (SELECT 1 FROM public.orders o
+              WHERE o.order_id = COALESCE(NEW.order_id, OLD.order_id)
+                AND COALESCE(o.is_legacy_import, false)) THEN
+    RETURN COALESCE(NEW, OLD);
+  END IF;
+
   IF TG_OP = 'DELETE' THEN
     RAISE EXCEPTION 'invoice % has gone to the customer — void it or issue a credit memo', OLD.order_id;
   END IF;
@@ -69,11 +83,38 @@ BEGIN
   -- delivered is untouched: quantity, product and the override all stand. See
   -- the header — this is the width of the "apply to past orders" true-up and
   -- nothing else, and it is decided from the row, not from a caller's claim.
-  IF  NEW.quantity        IS NOT DISTINCT FROM OLD.quantity
-  AND NEW.product_id      IS NOT DISTINCT FROM OLD.product_id
-  AND NEW.amount_override IS NOT DISTINCT FROM OLD.amount_override
+  -- 🔴 PIN THE DISCOUNT INPUTS, NOT ONLY THE OUTPUTS. trg_handle_order_details
+  -- sorts BEFORE this guard and derives list_price_total, discount_amount,
+  -- total_price, unit_cost_at_sale and roasted_weight from discount_kind and
+  -- discount_value. So an exception that let those two through was not a
+  -- price correction at all: one PATCH of {"discount_kind":"percent",
+  -- "discount_value":100} took a closed line's net to zero, restated
+  -- orders.order_total through update_order_aggregates, and re-stamped the
+  -- line's COGS at TODAY's product cost -- which is what customer_profitability
+  -- reads. 12,001 closed orders / 26,419 lines / $5.2m of line money.
+  --
+  -- The true-up itself never writes them (it SETs only unit_price_at_sale,
+  -- list_price_total, discount_amount, total_price), so pinning them costs
+  -- the feature nothing and makes the exception exactly its own width.
+  --
+  -- 🔴 AND ASK THE REASON, NOT THE INVOICE NUMBER. 20261112000005 added two
+  -- terms the old expression could not reach -- money recorded, and
+  -- voided/written off -- because the owner's rule is "if a payment has been
+  -- recorded it shouldn't be editable" and "not editable if voided". Inferring
+  -- "never billed" from invoice_number re-admitted every one of those rows
+  -- that happens to carry no STRATA number: three prod orders are Delivered
+  -- with paid_at stamped and no number today, one of them carrying $91.10.
+  -- document_closed_reason is the column that was added for this question.
+  IF  NEW.quantity         IS NOT DISTINCT FROM OLD.quantity
+  AND NEW.product_id       IS NOT DISTINCT FROM OLD.product_id
+  AND NEW.amount_override  IS NOT DISTINCT FROM OLD.amount_override
+  AND NEW.discount_kind    IS NOT DISTINCT FROM OLD.discount_kind
+  AND NEW.discount_value   IS NOT DISTINCT FROM OLD.discount_value
+  AND NEW.discount_source  IS NOT DISTINCT FROM OLD.discount_source
+  AND NEW.discount_rule_id IS NOT DISTINCT FROM OLD.discount_rule_id
   AND EXISTS (SELECT 1 FROM public.orders o
                WHERE o.order_id = NEW.order_id
+                 AND o.document_closed_reason IN ('delivered', 'shipped')
                  AND o.invoice_number  IS NULL
                  AND o.invoice_sent_at IS NULL
                  AND o.shop_order_ref  IS NULL
@@ -96,6 +137,54 @@ BEGIN
   RETURN NEW;
 END;
 $function$;
+
+-- 🔴 AND THE FEATURE STILL RAISES ON THE PATH THE CRON DRIVES. A future-dated
+-- "apply to past orders" is staged; cron job 27 touches the row hourly when
+-- its date arrives, with no JWT, and guard_script_reprice refuses a repricing
+-- from a session with no auth.uid() unless app.allow_price_backfill is set.
+-- Worse, that job is ONE update over every price-log row due in the last three
+-- days, so the raise aborts the whole statement: no due price applies that
+-- hour, including unrelated ones, and it keeps failing every hour while the
+-- row stays in the window -- which also stops trg_sync_product_price_from_log
+-- moving products.price. This IS the deliberate repair the guard's own message
+-- describes.
+--
+-- 🔴 NOT RETYPED. ALTER FUNCTION ... SET on a custom parameter needs
+-- superuser, which the postgres role on Supabase is not, so the line goes in
+-- the body -- read out, one statement inserted at an anchor asserted to occur
+-- exactly once, written back. CREATE OR REPLACE rewrites ALL of a body, and
+-- this function is 8kB of windowing arithmetic nobody should retype by hand.
+do $$
+declare v_src text; v_hits integer;
+begin
+  select p.prosrc into v_src
+    from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+   where n.nspname = 'public' and p.proname = 'propagate_price_log_to_orders';
+  if v_src is null then
+    raise exception 'propagate_price_log_to_orders is gone, so the true-up has no body to repair';
+  end if;
+
+  if position('app.allow_price_backfill' in v_src) > 0 then
+    raise notice 'the true-up already sets the backfill escape; left alone';
+    return;
+  end if;
+
+  select count(*) into v_hits
+    from regexp_matches(v_src, '    UPDATE public.order_details od', 'g');
+  if v_hits <> 1 then
+    raise exception 'the true-up body has % copies of its UPDATE anchor, not 1 — refusing to edit it blind', v_hits;
+  end if;
+
+  v_src := replace(v_src,
+    '    UPDATE public.order_details od',
+    '    -- The deliberate repair guard_script_reprice''s own message names.' || chr(10) ||
+    '    PERFORM set_config(''app.allow_price_backfill'', ''on'', true);' || chr(10) ||
+    '    UPDATE public.order_details od');
+
+  execute format(
+    'create or replace function public.propagate_price_log_to_orders() returns trigger language plpgsql security definer as %L',
+    v_src);
+end $$;
 
 do $$
 declare v_n integer;
@@ -125,6 +214,78 @@ begin
      and p.prosrc like '%o.shop_order_ref IS NULL%';
   if v_n <> 1 then
     raise exception 'the true-up no longer restricts itself to never-billed orders, so the guard exception no longer matches it';
+  end if;
+
+  -- The cron escape landed, and the body it landed in is still the body.
+  if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
+                  where n.nspname = 'public' and p.proname = 'propagate_price_log_to_orders'
+                    and p.prosrc like '%app.allow_price_backfill%'
+                    and p.prosrc like '%v_date_end%'
+                    and p.prosrc like '%backfill_orders%'
+                    and p.prosecdef) then
+    raise exception 'the true-up still cannot reprice from the cron, or its body did not survive the edit';
+  end if;
+end $$;
+
+-- ── Probes that RUN, each rolling itself back ─────────────────────────
+-- 🔴 Every assertion above is a grep over prosrc: it proves the text is
+-- there, not that the database behaves. These perform the real writes. The
+-- carve-out and its two controls are a set -- a guard that let everything
+-- through and a guard that let nothing through would each satisfy half of it.
+do $$
+declare v_line text; v_ord text; v_ok boolean;
+begin
+  select od.order_detail_id, od.order_id into v_line, v_ord
+    from public.order_details od
+    join public.orders o on o.order_id = od.order_id
+   where o.document_closed_reason in ('delivered', 'shipped')
+     and o.invoice_number is null and o.invoice_sent_at is null
+     and o.shop_order_ref is null and not coalesce(o.is_legacy_import, false)
+     and od.amount_override is null and od.quantity > 0
+   limit 1;
+
+  if v_line is null then
+    raise warning 'NO DELIVERED, NEVER-BILLED LINE ON THIS DATABASE — the true-up carve-out is UNPROVEN here, not proven';
+    return;
+  end if;
+
+  -- (a) MUST PASS: the true-up's own four columns, on its own target set.
+  begin
+    update public.order_details
+       set total_price = total_price, list_price_total = list_price_total,
+           unit_price_at_sale = unit_price_at_sale, discount_amount = discount_amount
+     where order_detail_id = v_line;
+    raise exception 'PROBE_ROLLBACK';
+  exception when others then
+    if SQLERRM <> 'PROBE_ROLLBACK' then
+      raise exception 'the true-up still cannot correct a price nobody was billed: %', SQLERRM;
+    end if;
+  end;
+
+  -- (b) MUST FAIL: the discount inputs, which derive the money through a
+  -- trigger that runs before this guard ever looks.
+  v_ok := false;
+  begin
+    update public.order_details
+       set discount_kind = 'percent', discount_value = 100
+     where order_detail_id = v_line;
+  exception when others then
+    v_ok := true;
+  end;
+  if not v_ok then
+    raise exception 'a closed line''s discount can still be rewritten, which restates its money and its COGS';
+  end if;
+
+  -- (c) MUST FAIL: the quantity, which is a fact about goods in a customer's
+  -- hands and is the thing the carve-out exists NOT to touch.
+  v_ok := false;
+  begin
+    update public.order_details set quantity = quantity + 1 where order_detail_id = v_line;
+  exception when others then
+    v_ok := true;
+  end;
+  if not v_ok then
+    raise exception 'what was delivered can still be changed — the carve-out is wider than a price correction';
   end if;
 end $$;
 

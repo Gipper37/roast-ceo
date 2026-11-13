@@ -71,13 +71,52 @@ begin
   -- the whole row, so refusing here would refuse every later edit to a closed
   -- order, including the ones that are still allowed.
   if TG_OP = 'UPDATE' and OLD.document_closed_at is not null then
-    NEW.document_closed_at     := OLD.document_closed_at;
-    NEW.document_closed_reason := OLD.document_closed_reason;
+    -- 🔴 ONE TERM IS REVERSIBLE AND MUST HAVE A RELEASE. A cheque keyed
+    -- against the wrong order stamps 'paid'; voidPayment is the documented
+    -- repair and it restores invoice_state, paid_at and the whole balance.
+    -- Without a way back the order stays locked forever, reading "This
+    -- invoice has been paid -- refund the payment" on an invoice with no
+    -- payment. Money that was taken back is not money recorded. Only the
+    -- release trigger may do it, and only for 'paid': nobody un-emails an
+    -- invoice, so emailed, delivered, shipped, voided and written_off latch.
+    if NEW.document_closed_at is null
+       and OLD.document_closed_reason = 'paid'
+       and current_setting('app.releasing_document', true) = OLD.order_id then
+      NEW.document_closed_reason := null;
+      return NEW;
+    end if;
+
+    -- The TIME never moves -- the document closed when it closed -- but the
+    -- REASON may be superseded by a stronger one. An invoice that was emailed
+    -- and is then voided IS voided, and the screen has to say so: otherwise
+    -- it offers a credit memo and a refund on a dead document. 3 of prod's 5
+    -- voided orders were emailed, delivered or paid first.
+    NEW.document_closed_at := OLD.document_closed_at;
+    NEW.document_closed_reason := case
+      when NEW.voided_at is not null
+        or coalesce(NEW.invoice_state, '') = 'void' then 'voided'
+      when NEW.written_off_at is not null           then 'written_off'
+      else OLD.document_closed_reason
+    end;
     return NEW;
   end if;
 
+  -- 🔴 ONLY THE STAMP MAY STAMP. `authenticated` holds column-level UPDATE on
+  -- orders.document_closed_at, orders_tenant_update is tenancy-only, and
+  -- guard_order_invoice_columns never names this column -- so without this
+  -- branch one PATCH {"document_closed_at": "2001-01-01"} freezes any order
+  -- in the tenant forever, with no permission key in the way and no way back.
+  -- It would also produce the half-stamp (time set, reason null) that this
+  -- migration's own verify block asserts cannot exist. The allocation trigger
+  -- is the one legitimate caller and names its order in a session setting it
+  -- sets itself -- the same sentinel shape the late-fee append already uses.
   if NEW.document_closed_at is not null then
-    return NEW;
+    if current_setting('app.closing_document', true) = NEW.order_id then
+      NEW.document_closed_reason := coalesce(NEW.document_closed_reason, 'paid');
+      return NEW;
+    end if;
+    NEW.document_closed_at     := null;
+    NEW.document_closed_reason := null;
   end if;
 
   v_reason := case
@@ -86,6 +125,15 @@ begin
     when coalesce(NEW.invoice_state, '') = 'void' then 'voided'
     when NEW.invoice_sent_at is not null then 'emailed'
     when NEW.order_status = 'Delivered'  then 'delivered'
+    -- 'Shipped' is live code, not a dead value: delivery/actions.ts writes it
+    -- and baggedStock.ts allocates stock on it. Nothing on either database
+    -- carries it today, so this decides a flow nobody has used yet rather
+    -- than changing one: goods with a carrier are as gone as goods delivered,
+    -- and leaving it open would make a shipped order freely editable --
+    -- looser than the delivered order beside it. Its own reason, because the
+    -- screen must not tell a roaster something was delivered when it is on a
+    -- van.
+    when NEW.order_status = 'Shipped'    then 'shipped'
     when NEW.paid_at is not null         then 'paid'
     when coalesce(NEW.invoice_state, '') in ('paid', 'partial') then 'paid'
     else null
@@ -114,11 +162,15 @@ security definer
 set search_path to 'public', 'pg_temp'
 as $fn$
 begin
+  -- Names itself to the stamp trigger, which refuses a caller-supplied stamp
+  -- from anyone else. Scoped to this transaction.
+  perform set_config('app.closing_document', NEW.order_id, true);
   update public.orders
      set document_closed_at     = now(),
          document_closed_reason = 'paid'
    where order_id = NEW.order_id
      and document_closed_at is null;
+  perform set_config('app.closing_document', '', true);
   return null;
 end
 $fn$;
@@ -127,6 +179,56 @@ drop trigger if exists trg_stamp_document_closed_alloc on public.invoice_payment
 create trigger trg_stamp_document_closed_alloc
   after insert on public.invoice_payment_allocations
   for each row execute function public.stamp_document_closed_on_allocation();
+
+-- ── 2b. And the way back ───────────────────────────────────────────────
+-- The owner's rule is "if a payment has been recorded it shouldn't be
+-- editable". A voided payment is not a recorded one. voidPayment and
+-- reverseWriteOff both exist to undo a mistake, and both would otherwise
+-- leave the order permanently locked with a reason that is no longer true.
+-- Releases ONLY when every other closing term is also absent, so this can
+-- never re-open a document that was emailed, delivered, shipped or voided.
+create or replace function public.release_document_closed_on_reversal()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public', 'pg_temp'
+as $fn$
+declare v_order text;
+begin
+  for v_order in
+    select distinct a.order_id
+      from public.invoice_payment_allocations a
+     where a.payment_id = coalesce(NEW.payment_id, OLD.payment_id)
+  loop
+    perform set_config('app.releasing_document', v_order, true);
+    update public.orders o
+       set document_closed_at = null, document_closed_reason = null
+     where o.order_id = v_order
+       and o.document_closed_reason = 'paid'
+       and o.invoice_sent_at is null
+       and o.order_status not in ('Delivered', 'Shipped')
+       and o.voided_at is null
+       and o.written_off_at is null
+       and o.paid_at is null
+       and coalesce(o.invoice_state, '') not in ('paid', 'partial', 'void')
+       and not exists (
+             select 1 from public.invoice_payment_allocations a2
+               join public.invoice_payments p2 on p2.payment_id = a2.payment_id
+              where a2.order_id = o.order_id and p2.voided_at is null);
+    perform set_config('app.releasing_document', '', true);
+  end loop;
+  return null;
+end
+$fn$;
+
+comment on function public.release_document_closed_on_reversal() is
+  'Un-stamps a document that was closed only because a payment was recorded, once that payment is voided and no live allocation remains. Money taken back is not money recorded: without this, voidPayment -- the documented repair for a cheque keyed against the wrong order -- left the order locked forever reading "this invoice has been paid".';
+
+drop trigger if exists trg_release_document_closed on public.invoice_payments;
+create trigger trg_release_document_closed
+  after update of voided_at on public.invoice_payments
+  for each row when (NEW.voided_at is not null and OLD.voided_at is null)
+  execute function public.release_document_closed_on_reversal();
 
 -- ── 3. Backfill, newest honest timestamp first ─────────────────────────
 -- Every term, not just the two the old expression had: the orders this adds
@@ -141,17 +243,22 @@ update public.orders o
          when coalesce(o.invoice_state, '') = 'void' then 'voided'
          when o.invoice_sent_at is not null then 'emailed'
          when o.order_status = 'Delivered'  then 'delivered'
+         when o.order_status = 'Shipped'    then 'shipped'
          else 'paid'
        end
  where o.document_closed_at is null
    and (o.invoice_sent_at is not null
-     or o.order_status = 'Delivered'
+     or o.order_status in ('Delivered', 'Shipped')
      or o.voided_at is not null
      or o.written_off_at is not null
      or o.paid_at is not null
      or coalesce(o.invoice_state, '') in ('paid', 'partial', 'void')
+     -- A VOIDED payment is not a recorded one, here as in the release above.
+     -- Without the join this would close orders whose only payment was
+     -- already taken back, and nothing could re-open them.
      or exists (select 1 from public.invoice_payment_allocations a
-                 where a.order_id = o.order_id));
+                  join public.invoice_payments p on p.payment_id = a.payment_id
+                 where a.order_id = o.order_id and p.voided_at is null));
 
 -- ── 4. The helper reads the stamp ──────────────────────────────────────
 -- guard_posted_order_detail_immutable calls this and is NOT retyped: routing
@@ -188,7 +295,7 @@ CREATE OR REPLACE FUNCTION public.guard_posted_order_immutable()
  RETURNS trigger
  LANGUAGE plpgsql
 AS $function$
-DECLARE v_why text;
+DECLARE v_why text; v_billed boolean;
 BEGIN
   IF TG_OP = 'DELETE' THEN
     IF OLD.posted THEN
@@ -209,17 +316,35 @@ BEGIN
 
   IF COALESCE(OLD.document_closed_at, NEW.document_closed_at) IS NOT NULL THEN
     v_why := COALESCE(OLD.document_closed_reason, NEW.document_closed_reason, 'emailed');
+    -- 🔴 TAX IS DERIVED, AND finalize_invoice RESOLVES IT AT THE MOMENT OF
+    -- NUMBERING. Its last act before minting is recompute_order_tax, whose
+    -- final statement writes these columns -- so locking them on a closed
+    -- document breaks the exact flow this migration exists to enable:
+    -- accounting invoices a delivered order, the guard raises, and finalize's
+    -- own `exception when others` swallows it to a NOTICE nobody sees over
+    -- PostgREST. The invoice is issued with no tax at all. Measured on prod:
+    -- 30 delivered, never-billed orders would have lost $69.03 of tax the
+    -- roaster owes, silently, growing with every delivered-and-unbilled order.
+    --
+    -- So the rule here is the one 20261112000007 states for lines: A FIGURE
+    -- THE CUSTOMER HAS SEEN NEVER MOVES. Never numbered and never sent means
+    -- nobody has seen it, and a derived figure may still be resolved. The
+    -- discount INPUTS stay locked either way -- those are a decision, not an
+    -- arithmetic, and the owner's rule is that a delivered order is not
+    -- editable.
+    v_billed := (OLD.invoice_number IS NOT NULL OR OLD.invoice_sent_at IS NOT NULL);
     IF (NEW.customer_id      IS DISTINCT FROM OLD.customer_id)
     OR (NEW.order_date       IS DISTINCT FROM OLD.order_date)
-    OR (NEW.tax_amount       IS DISTINCT FROM OLD.tax_amount)
-    OR (NEW.tax_rate         IS DISTINCT FROM OLD.tax_rate)
-    OR (NEW.tax_rate_id        IS DISTINCT FROM OLD.tax_rate_id)
-    OR (NEW.tax_basis          IS DISTINCT FROM OLD.tax_basis)
-    OR (NEW.prices_include_tax IS DISTINCT FROM OLD.prices_include_tax)
-    OR (NEW.tax_passed_through IS DISTINCT FROM OLD.tax_passed_through)
+    OR (v_billed AND (
+           (NEW.tax_amount         IS DISTINCT FROM OLD.tax_amount)
+        OR (NEW.tax_rate           IS DISTINCT FROM OLD.tax_rate)
+        OR (NEW.tax_rate_id        IS DISTINCT FROM OLD.tax_rate_id)
+        OR (NEW.tax_basis          IS DISTINCT FROM OLD.tax_basis)
+        OR (NEW.prices_include_tax IS DISTINCT FROM OLD.prices_include_tax)
+        OR (NEW.tax_passed_through IS DISTINCT FROM OLD.tax_passed_through)
+        OR (NEW.discount_total     IS DISTINCT FROM OLD.discount_total)))
     OR (NEW.discount_kind    IS DISTINCT FROM OLD.discount_kind)
     OR (NEW.discount_value   IS DISTINCT FROM OLD.discount_value)
-    OR (NEW.discount_total   IS DISTINCT FROM OLD.discount_total)
     OR (
       (   (NEW.bill_to_name     IS DISTINCT FROM OLD.bill_to_name)
        OR (NEW.bill_to_address  IS DISTINCT FROM OLD.bill_to_address)
@@ -257,6 +382,21 @@ BEGIN
   RETURN NEW;
 END;
 $function$;
+
+-- ── 5b. A half-stamp is not a stamp ────────────────────────────────────
+-- The verify block below asserts these two things hold at migration time.
+-- Constraints are what keep them true afterwards: without them the first
+-- caller-supplied stamp that slips through writes a time with no reason, and
+-- the guard then reports the reason as 'emailed' for a document that reached
+-- nobody.
+alter table public.orders drop constraint if exists orders_document_closed_whole;
+alter table public.orders add constraint orders_document_closed_whole
+  check ((document_closed_at is null) = (document_closed_reason is null));
+
+alter table public.orders drop constraint if exists orders_document_closed_reason_known;
+alter table public.orders add constraint orders_document_closed_reason_known
+  check (document_closed_reason is null
+      or document_closed_reason in ('emailed','delivered','shipped','paid','voided','written_off'));
 
 -- ── 6. Prove it ────────────────────────────────────────────────────────
 -- Each of these can fail. Asserting that the helper returns true for a stamped
@@ -321,6 +461,75 @@ begin
   -- that has not been stamped yet.
   if 'zy_stamp_document_closed' >= 'zzz_guard_posted_order' then
     raise exception 'the stamp trigger no longer fires before the row guard';
+  end if;
+end $$;
+
+-- ── 7. Probes that RUN, each rolling itself back ───────────────────────
+-- 🔴 A prosrc grep proves the text is there, not that the behaviour is. Every
+-- block below performs the real write in a subtransaction and then raises to
+-- undo it, so a failure is the database refusing, not a fixture problem. Each
+-- pairs the case that must PASS with the control that must FAIL.
+do $$
+declare v_open text; v_free text; v_billed text; v_ok boolean;
+begin
+  -- (a) THE REGRESSION THIS MIGRATION WAS RE-WRITTEN FOR. A delivered order
+  -- that nobody has billed must still accept its tax, or finalize_invoice
+  -- mints the number and silently issues the invoice untaxed.
+  select order_id into v_free from public.orders
+   where document_closed_at is not null
+     and invoice_number is null and invoice_sent_at is null
+     and not coalesce(is_legacy_import, false)
+   limit 1;
+  if v_free is null then
+    raise warning 'NO CLOSED, NEVER-BILLED ORDER ON THIS DATABASE — the tax carve-out is UNPROVEN here, not proven';
+  else
+    begin
+      update public.orders set tax_amount = coalesce(tax_amount, 0) where order_id = v_free;
+      raise exception 'PROBE_ROLLBACK';
+    exception when others then
+      if SQLERRM <> 'PROBE_ROLLBACK' then
+        raise exception 'a closed, never-billed order still cannot have its tax resolved, so finalize_invoice would issue it untaxed: %', SQLERRM;
+      end if;
+    end;
+  end if;
+
+  -- (a-control) ...and a BILLED closed invoice must still refuse it, or the
+  -- carve-out is not a carve-out, it is the lock gone.
+  select order_id into v_billed from public.orders
+   where document_closed_at is not null and invoice_number is not null
+   limit 1;
+  if v_billed is not null then
+    v_ok := false;
+    begin
+      update public.orders set tax_amount = coalesce(tax_amount, 0) + 1 where order_id = v_billed;
+    exception when others then
+      v_ok := true;
+    end;
+    if not v_ok then
+      raise exception 'tax moved on an invoice that already carries a number — the closed lock is gone';
+    end if;
+  end if;
+
+  -- (b) ONLY THE STAMP MAY STAMP. An ordinary write that names the column on
+  -- an open order must leave it open, not freeze it forever.
+  select order_id into v_open from public.orders where document_closed_at is null limit 1;
+  if v_open is not null then
+    begin
+      update public.orders
+         set document_closed_at = now(), document_closed_reason = 'emailed'
+       where order_id = v_open;
+      if exists (select 1 from public.orders
+                  where order_id = v_open and document_closed_at is not null) then
+        raise exception 'PROBE_FROZE';
+      end if;
+      raise exception 'PROBE_ROLLBACK';
+    exception when others then
+      if SQLERRM = 'PROBE_FROZE' then
+        raise exception 'any tenant user can permanently freeze an order by naming document_closed_at';
+      elsif SQLERRM <> 'PROBE_ROLLBACK' then
+        raise exception 'the stamp probe failed for an unexpected reason: %', SQLERRM;
+      end if;
+    end;
   end if;
 end $$;
 

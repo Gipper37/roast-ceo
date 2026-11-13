@@ -8,7 +8,9 @@
 -- 🔴 IT HAS ALREADY HAPPENED ONCE. One prod order is Canceled with $360 still
 -- sitting at the gateway: the order is dead, the invoice is gone from A/R, and
 -- the customer's bank still has their money with nothing on any screen saying
--- so. 30 live orders currently hold $12,669.83 that this protects.
+-- so. 33 live orders hold $28,361.26 that this protects -- measured with the
+-- per-order arithmetic below, which is nearly double what a per-transaction
+-- sum could see.
 --
 -- WHY THE RULE FALLS OUT OF THE MONEY RATHER THAN BEING IMPOSED ON IT.
 -- A hand-entered payment -- a cheque, cash, a card run on the countertop
@@ -39,30 +41,74 @@ language plpgsql
 security definer
 set search_path to 'public', 'pg_temp'
 as $fn$
-declare v_cents bigint;
+declare v_cents bigint; v_order text; v_company text;
 begin
-  -- The gateway's own arithmetic. A voided sale (status 'voided') and a
-  -- declined one contribute nothing, which is correct: neither is holding
-  -- money. A hand-entered payment has no row here at all.
-  select coalesce(sum(case
-           when t.type = 'sale'   and t.status = 'approved' then  t.gross_amount_cents
-           when t.type = 'refund' and t.status = 'approved' then -t.gross_amount_cents
-           else 0 end), 0)
-    into v_cents
-    from public.payment_transactions t
-   where t.order_id = NEW.order_id;
+  v_order   := coalesce(NEW.order_id,   OLD.order_id);
+  v_company := coalesce(NEW.company_id, OLD.company_id);
+
+  -- 🔴 MEASURE THE MONEY PER ORDER, NOT PER TRANSACTION ROW. One card charge
+  -- can pay several invoices, and payment_transactions.order_id names only
+  -- the FIRST. Prod charge b58332c2 is one approved $724.23 sale that paid
+  -- INV-104754 ($342.83) and INV-104851 ($381.40) and is filed on 104754
+  -- alone, so a per-row sum both UNDER-blocks (104851 cancels with the
+  -- customer's $381.40 still at the gateway -- the exact harm) and
+  -- OVER-blocks (104754 reads the whole $724.23 and can never be cancelled,
+  -- quoting an amount no refund on it could ever reduce).
+  --
+  -- The per-order fact is the allocation: what this order was actually
+  -- credited with, already net of refunds, because a refund un-allocates.
+  -- Three disjoint terms, so nothing is counted twice:
+  --   a. live card money allocated to THIS order;
+  --   b. money reserved at a terminal for THIS order and not yet settled;
+  --   c. a gateway charge filed on this order that never became a payment at
+  --      all -- the stuck or cancelled-before-allocation case, which is the
+  --      one already-stranded prod order ($360) this migration reports.
+  --
+  -- 🔴 AND `approved` IS NOT THIS APP'S DEFINITION OF "THE GATEWAY HAS THE
+  -- MONEY" -- `settled` is. onSettled writes settled=true whatever the row's
+  -- status says ("recorded as failed or declined, so the money was taken"),
+  -- and markChargeDidNotLand() flips a pending row to 'failed'. Summing only
+  -- 'approved' meant: charge times out, staff press "It did not land", the
+  -- order becomes cancellable, the settlement webhook then arrives. An
+  -- unanswered sale blocks too -- a refusal that clears itself once the
+  -- charge resolves is the safe direction, and the stuck-charge dashboard
+  -- exists to clear it. A refund still only subtracts once approved.
+  --
+  -- Every term is scoped to the order's own company: this runs SECURITY
+  -- DEFINER and so bypasses RLS, and payment_transactions.company_id has no
+  -- FK, CHECK or trigger tying it to the order's.
+  select coalesce((select sum(a.amount_cents)
+                     from public.invoice_payment_allocations a
+                     join public.invoice_payments p on p.payment_id = a.payment_id
+                    where a.order_id = v_order and a.company_id = v_company
+                      and p.voided_at is null
+                      and p.payment_transaction_id is not null), 0)
+       + coalesce((select sum(h.amount_cents)
+                     from public.terminal_charge_holds h
+                    where h.order_id = v_order), 0)
+       + greatest(coalesce((select sum(case
+                   when t.type = 'sale'
+                    and (t.status in ('approved', 'pending') or t.settled) then  t.gross_amount_cents
+                   when t.type = 'refund' and t.status = 'approved'        then -t.gross_amount_cents
+                   else 0 end)
+              from public.payment_transactions t
+             where t.order_id = v_order and t.company_id = v_company
+               and not exists (select 1 from public.invoice_payments p2
+                                where p2.payment_transaction_id = t.payment_transaction_id
+                                  and p2.voided_at is null)), 0), 0)
+    into v_cents;
 
   if v_cents > 0 then
     raise exception 'This order was paid through STRATA and $% is still with the customer''s bank. Refund that payment first, then cancel or void the order. (Money you recorded by hand — a cheque or cash — never blocks this: give it back yourself.)',
       to_char(v_cents / 100.0, 'FM999999990.00');
   end if;
 
-  return NEW;
+  return coalesce(NEW, OLD);
 end
 $fn$;
 
 comment on function public.guard_void_needs_refund() is
-  'Refuses to cancel or void an order while the payment gateway still holds the customer''s money. Hand-entered payments carry no gateway transaction and never block, by instruction: that money never passed through us. Lives here and not only in voidInvoice because order_status has no permission gate and no transition guard, so the status dropdown reaches Canceled without passing the action.';
+  'Refuses to cancel, void or DELETE an order while the payment gateway still holds the customer''s money. Measured per ORDER -- live card allocations, plus terminal holds, plus any charge filed on the order that never became a payment -- because one card charge can pay several invoices and payment_transactions.order_id names only the first. Counts a charge as live when it is approved, unanswered, or settled whatever its status says. Hand-entered payments carry no gateway transaction and never block, by instruction: that money never passed through us. Lives here and not only in voidInvoice because order_status has no permission gate and no transition guard, so the status dropdown reaches Canceled without passing the action, and a DELETE passes no action at all.';
 
 -- Sorts before zy_stamp_document_closed, so an order that is refused here is
 -- never stamped closed on the way out.
@@ -75,6 +121,21 @@ create trigger zx_guard_void_needs_refund
     or (NEW.voided_at     is not null  and OLD.voided_at     is null)
     or (NEW.invoice_state = 'void'     and OLD.invoice_state is distinct from 'void')
   )
+  execute function public.guard_void_needs_refund();
+
+-- 🔴 AND A DELETE KILLS THE ORDER JUST AS DEAD. orders_delete_needs_permission
+-- admits order.cancel OR order.create -- 8 of 11 roles on prod, staff among
+-- them -- and the only DELETE guard on orders refuses solely when OLD.posted.
+-- Three prod orders are unposted AND holding approved gateway money right now.
+-- payment_transactions_order_id_fkey is ON DELETE SET NULL, so the money row
+-- would survive with no order to name it, and the stranded report below
+-- (which joins orders) could never count it again. The migration's own reason
+-- for living in the database -- "a guard the UI can walk around is a hint" --
+-- applies with more force here, because a DELETE needs no UI at all.
+drop trigger if exists zx_guard_delete_needs_refund on public.orders;
+create trigger zx_guard_delete_needs_refund
+  before delete on public.orders
+  for each row
   execute function public.guard_void_needs_refund();
 
 do $$
@@ -90,10 +151,15 @@ begin
     raise exception 'the void guard no longer fires before the close stamp';
   end if;
 
+  if not exists (select 1 from pg_trigger t join pg_class c on c.oid = t.tgrelid
+                  where c.relname = 'orders' and t.tgname = 'zx_guard_delete_needs_refund') then
+    raise exception 'a DELETE still walks past the void guard';
+  end if;
+
   if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                   where n.nspname = 'public' and p.proname = 'guard_void_needs_refund'
-                    and p.prosrc like '%payment_transactions%') then
-    raise exception 'the void guard does not read the gateway ledger';
+                    and p.prosrc like '%invoice_payment_allocations%') then
+    raise exception 'the void guard does not measure the money per order';
   end if;
 
   -- Already-dead orders are reported, not repaired: sending money back is a
@@ -111,6 +177,87 @@ begin
   if v_n > 0 then
     raise notice 'STRANDED: % order(s) are already canceled or void with $% still at the gateway. They predate this guard and need a refund by hand.',
       v_n, to_char(v_cents / 100.0, 'FM999999990.00');
+  end if;
+end $$;
+
+-- ── Probes that RUN, each rolling itself back ─────────────────────────
+-- 🔴 The block above only reads. These two perform the real write and undo
+-- it, and they are a PAIR: the case that must be refused and the control that
+-- must pass. Without the control, a guard that refused everything would look
+-- exactly as green as a guard that works.
+do $$
+declare v_paid text; v_free text; v_ok boolean;
+begin
+  -- Must REFUSE: an order the gateway is still holding money for.
+  select o.order_id into v_paid
+    from public.orders o
+   where o.order_status not in ('Canceled')
+     and coalesce((select sum(a.amount_cents)
+                     from public.invoice_payment_allocations a
+                     join public.invoice_payments p on p.payment_id = a.payment_id
+                    where a.order_id = o.order_id and p.voided_at is null
+                      and p.payment_transaction_id is not null), 0)
+       + coalesce((select sum(case when t.type = 'sale'
+                                and (t.status in ('approved','pending') or t.settled) then t.gross_amount_cents
+                                   when t.type = 'refund' and t.status = 'approved' then -t.gross_amount_cents
+                                   else 0 end)
+                     from public.payment_transactions t
+                    where t.order_id = o.order_id
+                      and not exists (select 1 from public.invoice_payments p2
+                                       where p2.payment_transaction_id = t.payment_transaction_id
+                                         and p2.voided_at is null)), 0) > 0
+   limit 1;
+
+  if v_paid is null then
+    raise warning 'NO CARD-PAID LIVE ORDER ON THIS DATABASE — the refusal is UNPROVEN here, not proven';
+  else
+    v_ok := false;
+    begin
+      update public.orders set order_status = 'Canceled' where order_id = v_paid;
+    exception when others then
+      v_ok := (SQLERRM like '%still with the customer%');
+      if not v_ok then
+        raise exception 'the cancel was refused for the WRONG reason: %', SQLERRM;
+      end if;
+    end;
+    if not v_ok then
+      raise exception 'an order holding gateway money was cancelled without a refund';
+    end if;
+
+    -- The same order, deleted rather than cancelled, must be refused too.
+    v_ok := false;
+    begin
+      delete from public.orders where order_id = v_paid;
+    exception when others then
+      v_ok := (SQLERRM like '%still with the customer%');
+    end;
+    if not v_ok then
+      raise exception 'an order holding gateway money was DELETED without a refund';
+    end if;
+  end if;
+
+  -- 🔴 THE CONTROL THAT MUST PASS. The owner's rule is that hand-entered
+  -- money never blocks. An order with no gateway charge must still cancel,
+  -- or this guard has stopped the roastery cancelling anything.
+  select o.order_id into v_free
+    from public.orders o
+   where o.order_status not in ('Canceled')
+     and o.voided_at is null
+     and not exists (select 1 from public.payment_transactions t where t.order_id = o.order_id)
+     and not exists (select 1 from public.invoice_payment_allocations a where a.order_id = o.order_id)
+     and not exists (select 1 from public.terminal_charge_holds h where h.order_id = o.order_id)
+   limit 1;
+  if v_free is null then
+    raise warning 'NO GATEWAY-FREE ORDER ON THIS DATABASE — the control is UNPROVEN here';
+  else
+    begin
+      update public.orders set order_status = 'Canceled' where order_id = v_free;
+      raise exception 'PROBE_ROLLBACK';
+    exception when others then
+      if SQLERRM <> 'PROBE_ROLLBACK' then
+        raise exception 'an order with NO gateway money could not be cancelled, so this guard blocks everything: %', SQLERRM;
+      end if;
+    end;
   end if;
 end $$;
 
