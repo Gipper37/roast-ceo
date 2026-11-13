@@ -284,6 +284,40 @@ comment on function public.order_document_is_closed(text) is
 revoke all on function public.order_document_is_closed(text) from public, anon;
 grant execute on function public.order_document_is_closed(text) to authenticated;
 
+-- CLOSED is not the same question as FINAL, and conflating them is exactly
+-- what broke finalize_invoice. A document CLOSES when the operator is done
+-- with it -- delivered, shipped, emailed, paid, voided. Its FIGURES are FINAL
+-- only once the customer has actually been shown them: a number was issued,
+-- it was emailed, it came from the storefront, or it was imported from the
+-- system that billed it. Between the two sits the order this whole batch
+-- exists for -- delivered, never billed -- whose arithmetic may still be
+-- resolved, and must be, because that is what finalize_invoice does at the
+-- moment of numbering.
+create or replace function public.order_figures_are_final(p_order_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path to 'public', 'pg_temp'
+as $fn$
+  select coalesce(
+    (select o.document_closed_at is not null
+        and (o.invoice_number  is not null
+          or o.invoice_sent_at is not null
+          or o.shop_order_ref  is not null
+          or coalesce(o.is_legacy_import, false)
+          or coalesce(o.document_closed_reason, '') not in ('delivered', 'shipped'))
+       from public.orders o
+      where o.order_id = p_order_id),
+    false)
+$fn$;
+
+comment on function public.order_figures_are_final(text) is
+  'True once the customer has been shown this order''''s figures -- a closed document that carries a number, was emailed, came from the storefront, or was imported. Deliberately narrower than order_document_is_closed: a delivered order nobody has billed is closed to editing, but its tax and discounts may still be resolved.';
+
+revoke all on function public.order_figures_are_final(text) from public, anon;
+grant execute on function public.order_figures_are_final(text) to authenticated;
+
 -- ── 5. The header guard: write-once number, OLD-or-NEW closed ──────────
 -- Body is 20261112000003's, with three changes and nothing else retyped:
 --   a. the invoice number gets its own unconditional write-once rule and
@@ -332,7 +366,16 @@ BEGIN
     -- discount INPUTS stay locked either way -- those are a decision, not an
     -- arithmetic, and the owner's rule is that a delivered order is not
     -- editable.
-    v_billed := (OLD.invoice_number IS NOT NULL OR OLD.invoice_sent_at IS NOT NULL);
+    --
+    -- Written to be the SAME test 20261112000007 uses on the lines, so the
+    -- header and the lines cannot disagree about which orders a correction
+    -- may still reach: if the lines moved, the arithmetic over them has to be
+    -- allowed to follow, or the invoice contradicts itself.
+    v_billed := (OLD.invoice_number IS NOT NULL
+              OR OLD.invoice_sent_at IS NOT NULL
+              OR OLD.shop_order_ref  IS NOT NULL
+              OR COALESCE(OLD.is_legacy_import, false)
+              OR COALESCE(OLD.document_closed_reason, '') NOT IN ('delivered', 'shipped'));
     IF (NEW.customer_id      IS DISTINCT FROM OLD.customer_id)
     OR (NEW.order_date       IS DISTINCT FROM OLD.order_date)
     OR (v_billed AND (
