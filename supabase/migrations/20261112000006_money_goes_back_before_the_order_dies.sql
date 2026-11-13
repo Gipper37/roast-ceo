@@ -35,70 +35,67 @@
 
 begin;
 
-create or replace function public.guard_void_needs_refund()
-returns trigger
-language plpgsql
+-- 🔴 ONE ARITHMETIC, NOT TWO. The guard below refuses the write; the orders
+-- list has to ask the same question BEFORE it writes, because a bulk cancel
+-- is a single statement over N orders -- one card-paid order in a selection
+-- of twenty aborts all twenty and the refusal reaches the user as a thrown
+-- server action, which Next masks in a production build. If the screen's
+-- check and the guard's check were written twice they would drift, and the
+-- drift would show up as a button that fails or a refusal that never fires.
+create or replace function public.order_gateway_money_cents(p_order_ids text[])
+returns table (order_id text, cents bigint)
+language sql
+stable
 security definer
 set search_path to 'public', 'pg_temp'
 as $fn$
-declare v_cents bigint; v_order text; v_company text;
-begin
-  v_order   := coalesce(NEW.order_id,   OLD.order_id);
-  v_company := coalesce(NEW.company_id, OLD.company_id);
-
-  -- 🔴 MEASURE THE MONEY PER ORDER, NOT PER TRANSACTION ROW. One card charge
-  -- can pay several invoices, and payment_transactions.order_id names only
-  -- the FIRST. Prod charge b58332c2 is one approved $724.23 sale that paid
-  -- INV-104754 ($342.83) and INV-104851 ($381.40) and is filed on 104754
-  -- alone, so a per-row sum both UNDER-blocks (104851 cancels with the
-  -- customer's $381.40 still at the gateway -- the exact harm) and
-  -- OVER-blocks (104754 reads the whole $724.23 and can never be cancelled,
-  -- quoting an amount no refund on it could ever reduce).
-  --
-  -- The per-order fact is the allocation: what this order was actually
-  -- credited with, already net of refunds, because a refund un-allocates.
-  -- Three disjoint terms, so nothing is counted twice:
-  --   a. live card money allocated to THIS order;
-  --   b. money reserved at a terminal for THIS order and not yet settled;
-  --   c. a gateway charge filed on this order that never became a payment at
-  --      all -- the stuck or cancelled-before-allocation case, which is the
-  --      one already-stranded prod order ($360) this migration reports.
-  --
-  -- 🔴 AND `approved` IS NOT THIS APP'S DEFINITION OF "THE GATEWAY HAS THE
-  -- MONEY" -- `settled` is. onSettled writes settled=true whatever the row's
-  -- status says ("recorded as failed or declined, so the money was taken"),
-  -- and markChargeDidNotLand() flips a pending row to 'failed'. Summing only
-  -- 'approved' meant: charge times out, staff press "It did not land", the
-  -- order becomes cancellable, the settlement webhook then arrives. An
-  -- unanswered sale blocks too -- a refusal that clears itself once the
-  -- charge resolves is the safe direction, and the stuck-charge dashboard
-  -- exists to clear it. A refund still only subtracts once approved.
-  --
-  -- Every term is scoped to the order's own company: this runs SECURITY
-  -- DEFINER and so bypasses RLS, and payment_transactions.company_id has no
-  -- FK, CHECK or trigger tying it to the order's.
-  select coalesce((select sum(a.amount_cents)
+  select o.order_id,
+         coalesce((select sum(a.amount_cents)
                      from public.invoice_payment_allocations a
                      join public.invoice_payments p on p.payment_id = a.payment_id
-                    where a.order_id = v_order and a.company_id = v_company
+                    where a.order_id = o.order_id and a.company_id = o.company_id
                       and p.voided_at is null
                       and p.payment_transaction_id is not null), 0)
        + coalesce((select sum(h.amount_cents)
                      from public.terminal_charge_holds h
-                    where h.order_id = v_order), 0)
+                    where h.order_id = o.order_id), 0)
        + greatest(coalesce((select sum(case
                    when t.type = 'sale'
                     and (t.status in ('approved', 'pending') or t.settled) then  t.gross_amount_cents
                    when t.type = 'refund' and t.status = 'approved'        then -t.gross_amount_cents
                    else 0 end)
               from public.payment_transactions t
-             where t.order_id = v_order and t.company_id = v_company
+             where t.order_id = o.order_id and t.company_id = o.company_id
                and not exists (select 1 from public.invoice_payments p2
                                 where p2.payment_transaction_id = t.payment_transaction_id
                                   and p2.voided_at is null)), 0), 0)
-    into v_cents;
+    from public.orders o
+   where o.order_id = any(p_order_ids)
+$fn$;
 
-  if v_cents > 0 then
+comment on function public.order_gateway_money_cents(text[]) is
+  'How much of the customer''s money the payment gateway is still holding for each of these orders. Measured per ORDER -- live card allocations, plus terminal holds, plus any charge filed on the order that never became a payment -- because one card charge can pay several invoices and payment_transactions.order_id names only the first. Counts a charge as live when it is approved, unanswered, or settled whatever its row status says. Read by guard_void_needs_refund, and by the orders list before a bulk cancel, so the screen and the guard cannot disagree.';
+
+revoke all on function public.order_gateway_money_cents(text[]) from public, anon;
+grant execute on function public.order_gateway_money_cents(text[]) to authenticated;
+
+create or replace function public.guard_void_needs_refund()
+returns trigger
+language plpgsql
+security definer
+set search_path to 'public', 'pg_temp'
+as $fn$
+declare v_cents bigint; v_order text;
+begin
+  v_order := coalesce(NEW.order_id, OLD.order_id);
+
+  -- The same arithmetic the orders list asks before it offers the cancel.
+  -- See order_gateway_money_cents for why it is per ORDER and why `approved`
+  -- alone was never the right test.
+  select coalesce(m.cents, 0) into v_cents
+    from public.order_gateway_money_cents(array[v_order]) m;
+
+  if coalesce(v_cents, 0) > 0 then
     raise exception 'This order was paid through STRATA and $% is still with the customer''s bank. Refund that payment first, then cancel or void the order. (Money you recorded by hand — a cheque or cash — never blocks this: give it back yourself.)',
       to_char(v_cents / 100.0, 'FM999999990.00');
   end if;
@@ -158,22 +155,19 @@ begin
 
   if not exists (select 1 from pg_proc p join pg_namespace n on n.oid = p.pronamespace
                   where n.nspname = 'public' and p.proname = 'guard_void_needs_refund'
-                    and p.prosrc like '%invoice_payment_allocations%') then
-    raise exception 'the void guard does not measure the money per order';
+                    and p.prosrc like '%order_gateway_money_cents%') then
+    raise exception 'the void guard no longer shares its arithmetic with the screen';
   end if;
 
   -- Already-dead orders are reported, not repaired: sending money back is a
   -- decision with a customer on the other end of it, not a migration.
-  with out as (
-    select t.order_id,
-           sum(case when t.type = 'sale'   and t.status = 'approved' then  t.gross_amount_cents
-                    when t.type = 'refund' and t.status = 'approved' then -t.gross_amount_cents
-                    else 0 end) as cents
-      from public.payment_transactions t group by t.order_id)
-  select count(*), coalesce(sum(out.cents), 0) into v_n, v_cents
-    from public.orders o join out on out.order_id = o.order_id
-   where out.cents > 0
-     and (o.order_status = 'Canceled' or o.voided_at is not null or o.invoice_state = 'void');
+  select count(*), coalesce(sum(m.cents), 0) into v_n, v_cents
+    from public.orders o
+    join public.order_gateway_money_cents(
+           array(select order_id from public.orders
+                  where order_status = 'Canceled' or voided_at is not null or invoice_state = 'void')) m
+      on m.order_id = o.order_id
+   where m.cents > 0;
   if v_n > 0 then
     raise notice 'STRANDED: % order(s) are already canceled or void with $% still at the gateway. They predate this guard and need a refund by hand.',
       v_n, to_char(v_cents / 100.0, 'FM999999990.00');
@@ -189,23 +183,10 @@ do $$
 declare v_paid text; v_free text; v_ok boolean;
 begin
   -- Must REFUSE: an order the gateway is still holding money for.
-  select o.order_id into v_paid
-    from public.orders o
-   where o.order_status not in ('Canceled')
-     and coalesce((select sum(a.amount_cents)
-                     from public.invoice_payment_allocations a
-                     join public.invoice_payments p on p.payment_id = a.payment_id
-                    where a.order_id = o.order_id and p.voided_at is null
-                      and p.payment_transaction_id is not null), 0)
-       + coalesce((select sum(case when t.type = 'sale'
-                                and (t.status in ('approved','pending') or t.settled) then t.gross_amount_cents
-                                   when t.type = 'refund' and t.status = 'approved' then -t.gross_amount_cents
-                                   else 0 end)
-                     from public.payment_transactions t
-                    where t.order_id = o.order_id
-                      and not exists (select 1 from public.invoice_payments p2
-                                       where p2.payment_transaction_id = t.payment_transaction_id
-                                         and p2.voided_at is null)), 0) > 0
+  select m.order_id into v_paid
+    from public.order_gateway_money_cents(
+           array(select order_id from public.orders where order_status <> 'Canceled')) m
+   where m.cents > 0
    limit 1;
 
   if v_paid is null then
