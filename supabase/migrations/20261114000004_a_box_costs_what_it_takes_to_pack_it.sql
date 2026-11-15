@@ -1,18 +1,16 @@
--- A box costs what it takes to pack it.
+-- A box costs what it takes to pack it, and what is in it.
 --
--- Owner, 2026-11-14: *"you should be able to add the box as a bom cuz that is
--- part of building the product."*
+-- Owner, 2026-11-14: *"all that needed to be added was the selection of a
+-- consumable inventory item (the carton) as the carton. that inventory item
+-- will have its own cost as all items do."*
 --
--- He already could. `product_consumables` has no type guard, the Consumables
--- editor is already rendered on a mixed case, and the stock side is right:
--- measured on staging, selling three boxes took the carton 10 → 7 while the
--- bags inside still drew on their own exploded lines. Par, reorder and monthly
--- usage all count it, one carton per BOX.
+-- He was right, and my first pass at this migration got the shape of it wrong
+-- twice over. Both corrections are the reason this file looks the way it does.
 --
--- 🔴 WHAT WAS WRONG WAS THE COST, IN FOUR PLACES.
+-- 🔴 WHAT WAS ACTUALLY BROKEN: ONE ARM OF ONE TRIGGER.
 --
 -- `update_product_total_cogs` branches on the product type's NAME
--- (`v_is_coffee := COALESCE(v_kind,'Coffee') = 'Coffee'`), `ptype_bundle`'s
+-- (`v_is_coffee := COALESCE(v_kind,'Coffee') = 'Coffee'`). `ptype_bundle`'s
 -- name is 'Bundle', so a box took the ELSE arm, which hardcodes
 -- `v_consumable_cost_total := 0` and writes both cost columns NULL. A $48 box
 -- with a $4.25 carton read COGS $0.00, gross profit $48.00, COGS% 0.0% -- in
@@ -21,38 +19,68 @@
 -- That zero did not stay on a screen. `handle_order_detail_logic` reads
 -- `COALESCE(p.total_unit_cogs, 0)` and writes
 -- `unit_cost_at_sale := quantity * v_cogs`, so the box's order line was BORN at
--- cost 0 (measured: 0 on the box, 18.498 on its child) -- wrong gross profit on
--- the order, in customer profitability and in the profit report.
+-- cost 0. And it changed later on its own: `get_product_cogs_on_date` and
+-- `product_cogs_for_keys` have no type branch and both already returned the BOM
+-- cost for the same box, so `recost_orders_for_consumable_purchases` -- fired by
+-- `shipment_received` -- rewrote that line the moment the next carton arrived.
+-- Nobody had to touch the box. The new arm makes the trigger agree with the two
+-- dated engines, which is the whole of the stored-cost fix.
 --
--- And it changed later on its own: `get_product_cogs_on_date` and
--- `product_cogs_for_keys` have no type branch and both returned 4.25 for the
--- same box, so `recost_orders_for_consumable_purchases` -- fired by
--- `shipment_received` -- rewrote that line 0 → 12.75 when the next carton
--- arrived. Nobody had to touch the box.
+-- 🔴 AND `total_unit_cogs` MUST STAY THE CARTON ALONE. This is the correction.
 --
--- Nothing flagged any of it: `data_quality_issues` says "Suspiciously high
--- margin" above 90% but filters on `total_unit_cogs > 0`, and the cost centre
--- drops bundle lines from its missing-cost list as "no cost by design" -- true
--- before a box could have a bill of materials, false after.
+-- A mixed case is sold as ONE line and costed as SEVERAL:
+-- `trg_explode_bundle_order_line` writes a child `order_details` row per item
+-- inside, with the real quantity, `parent_order_detail_id` set and price 0, and
+-- `handle_order_detail_logic` stamps each child with its OWN product's cost. So
+-- the coffee in the box is already costed, on the lines that hold it.
 --
--- 🔴 WHICH INPUT IS THE BOX'S COST was his to decide, because a bundle has two
--- live ones: the BOM, read by both dated engines and ignored by this trigger,
--- and the hand-entered `products.unit_cost`, read by this trigger and ignored
--- by both dated engines. He chose the BOM. So the new arm reads the BOM and
--- deliberately does not read `unit_cost`, which is what makes this trigger
--- agree with the two engines that recost history.
+-- Measured on staging: one box sold writes revenue 48 / cost 0 on the parent
+-- and revenue 0 / cost 6.166 on its child. Putting the contents into
+-- `products.total_unit_cogs` as well took the same box from 7.068 to 13.234 and
+-- `customer_profitability` from 82.4% margin to 71.9% -- a 10.5-point lie on the
+-- screen you would use to decide whether to keep an account. NOT ONE of the 186
+-- relations in this database mentions `parent_order_detail_id`, so nothing
+-- anywhere filters the children out. This is also Shopify's model: price on the
+-- parent, cost and stock on the components, "sales reporting at the component
+-- level".
 --
--- 🔴 THE BODY BELOW IS THE DEPLOYED ONE, TAKEN FROM pg_proc AND EDITED AT FOUR
--- ANCHORS. CREATE OR REPLACE rewrites the whole function, so none of it was
--- retyped: the declaration, the flag, the cost arm and the two stored columns
--- are the only changes, and 20261026000001's case-price reasoning is carried
--- through verbatim.
+-- 🔴 SO THE BOX'S TRUE COST IS A READ, NOT A COLUMN: `product_bundle_costs`.
+--
+-- Carton + SUM(child cost x quantity), derived on read, exactly as
+-- `lib/shop/shipWeight.ts` derives a box's weight and for the same reason -- a
+-- stored figure goes stale the moment a child's cost moves, and nothing fires a
+-- trigger on the parent when a child changes. One join, no recursion:
+-- `guard_product_component` already refuses a box inside a box in all three
+-- directions.
+--
+-- The product screens, the cost centre and the target-COGS price back-solver
+-- read that view. The order path reads the column and is untouched.
+--
+-- 🔴 WHY `product_margins` AND NOT `data_quality_issues`: nothing reads
+-- `data_quality_issues`. Grepped: its only references in the app are the two
+-- generated type files. The Data Health page reads `product_margins` and
+-- `order_details` directly. An earlier draft of this migration taught the
+-- unread view to flag a zero-cost box and reported the row count as a result;
+-- it was dead code. `product_margins` is the one the cost centre actually
+-- opens, and correcting the total there makes `data_quality_issues` right as a
+-- side effect, since it reads `product_margins`.
+--
+-- 🔴 AND IT CANNOT SHIP WITHOUT THE VIEW. `unitPriceForTargetCogs` bails at
+-- `cogs <= 0`, so a box's "price for a target COGS%" box is inert today only
+-- because the cost is zero. The trigger arm alone would switch it on with the
+-- carton as the whole cost: at a $0.902 carton and a 40% target it would
+-- propose $2.26 for a box that sells at $48 and holds $6.17 of coffee.
+--
+-- 🔴 THE TRIGGER BODY BELOW IS THE DEPLOYED ONE, TAKEN FROM pg_proc AND EDITED
+-- AT FOUR ANCHORS. CREATE OR REPLACE rewrites the whole function, so none of it
+-- was retyped: the declaration, the flag, the cost arm and the two stored
+-- columns are the only changes, and 20261026000001's case-price reasoning is
+-- carried through verbatim.
 --
 -- Not in this migration, and still open: `trg_product_cogs_touch` is
 -- `AFTER UPDATE OF total_unit_cogs` and nothing ever names that column in a SET
 -- list, so `product_cogs_recompute_queue` is never filled by a cost change --
 -- for every product type, not just boxes. Recorded, deliberately out of scope.
-
 begin;
 
 -- A trigger function on `products` and one reporting view. Neither rewrites a
@@ -248,128 +276,96 @@ END;
 
 $function$;
 
--- ── The report that could not see a zero ──────────────────────────────────
-create or replace view public.data_quality_issues as
- SELECT 'product'::text AS entity_type,
-    p.product_id AS entity_id,
-    p.product_name AS entity_name,
+-- ── What a box really costs ────────────────────────────────────────────────
+-- One row per mixed case. `packaging_cost` is the carton BOM the trigger above
+-- stores; `contents_cost` is what the order will book on the exploded child
+-- lines, computed the same way `handle_order_detail_logic` computes it
+-- (quantity x the child's own `total_unit_cogs`), so the figure a product page
+-- shows and the figure the order books are the same arithmetic.
+--
+-- 🔴 LEFT JOIN TO `products`, DELIBERATELY. A component row whose child is gone
+-- -- or hidden from this reader by RLS -- would be dropped by an inner join and
+-- the box would quietly cost less, with nothing saying so.
+-- `children_missing_cost` is how a caller can say the total is a floor rather
+-- than reporting it as the answer. Same rule, same reason, as
+-- `lib/shop/shipWeight.ts`'s `failed`.
+create or replace view public.product_bundle_costs as
+select
+    p.product_id                                      as parent_product_id,
     p.company_id,
     p.facility_id,
-    p.margin_pct,
-        CASE
-            WHEN p.margin_pct < 0::numeric THEN 'Selling below cost'::text
-            WHEN p.margin_pct > 90::numeric THEN 'Suspiciously high margin'::text
-            ELSE NULL::text
-        END AS issue
-   FROM product_margins p
-     JOIN products pp ON pp.product_id = p.product_id
--- 🔴 A MIXED CASE'S OWN MARGIN IS NOT COMPARABLE TO A BAG'S, so it is held back
--- from the high-margin arm and from nothing else.
---
--- Costing the box correctly gives it a 91.1% margin: $48 against a $4.25
--- carton. That is not a pricing fault, it is the shape of a bundle -- the
--- coffee in the box is costed on the CONTENTS' own order lines, where it
--- belongs, so the box's own row can only ever show packaging against the whole
--- price. Measured on staging: the moment the carton was added, Data Health went
--- from "No cost recorded" to "Suspiciously high margin", and it would have said
--- that about every mixed case for ever. A report that cries wolf once per box
--- stops being read, which is what it cost the Revised orders bar.
---
--- "Selling below cost" is KEPT for a box: priced under its own packaging is a
--- real fault and nothing structural makes it fire.
-  WHERE p.data_warning = true AND p.total_unit_cogs > 0::numeric
-    AND NOT (pp.product_type = 'ptype_bundle' AND p.margin_pct > 90::numeric)
-UNION ALL
- SELECT 'coffee'::text AS entity_type,
-    ci.origin_id AS entity_id,
-    ci.origin AS entity_name,
-    ci.company_id,
-    ci.facility_id,
-    NULL::numeric AS margin_pct,
-    'Missing coffee cost'::text AS issue
-   FROM coffee_inventory ci
-  WHERE COALESCE(ci.latest_cost, 0::numeric) = 0::numeric
-UNION ALL
- SELECT 'coffee'::text AS entity_type,
-    ci.origin_id AS entity_id,
-    ci.origin AS entity_name,
-    ci.company_id,
-    ci.facility_id,
-    NULL::numeric AS margin_pct,
-    'Fallback cost only – add item to a shipment'::text AS issue
-   FROM coffee_inventory ci
-  WHERE ci.latest_cost > 0::numeric AND COALESCE(ci.last_cost_lb, 0::numeric) = 0::numeric
-UNION ALL
- SELECT 'consumable'::text AS entity_type,
-    c.consumable_inventory_id AS entity_id,
-    c.consumable_inventory_item AS entity_name,
-    c.company_id,
-    c.facility_id,
-    NULL::numeric AS margin_pct,
-    'Missing consumable cost'::text AS issue
-   FROM consumable_inventory c
-  WHERE COALESCE(c.last_cost_unit, 0::numeric) = 0::numeric
-UNION ALL
- SELECT 'consumable'::text AS entity_type,
-    c.consumable_inventory_id AS entity_id,
-    c.consumable_inventory_item AS entity_name,
-    c.company_id,
-    c.facility_id,
-    NULL::numeric AS margin_pct,
-    'Fallback cost only – add item to a shipment'::text AS issue
-   FROM consumable_inventory c
-  WHERE COALESCE(c.fallback_unit_cost, 0::numeric) > 0::numeric AND COALESCE(c.last_cost_unit, 0::numeric) > 0::numeric AND NOT (EXISTS ( SELECT 1
-           FROM consumable_inventory_purchased cip
-          WHERE cip.consumable_inventory_item = c.consumable_inventory_id AND cip.facility_id = c.facility_id AND cip.cost_unit IS NOT NULL AND cip.cost_unit::text <> ''::text AND cip.cost_unit > 0::numeric))
-UNION ALL
- SELECT 'product'::text AS entity_type,
-    p.product_id AS entity_id,
-    p.product_name AS entity_name,
-    p.company_id,
-    p.facility_id,
-    NULL::numeric AS margin_pct,
-    'Missing product price'::text AS issue
-   FROM products p
-  WHERE p.is_active AND p.merge_into_id IS NULL AND NOT (EXISTS ( SELECT 1
-           FROM products_price_log ppl
-          WHERE ppl.product_id = p.product_id))
-UNION ALL
--- 🔴 A PRODUCT THAT SHOULD COST SOMETHING AND COSTS NOTHING.
---
--- The arm above is `data_warning = true AND total_unit_cogs > 0`, and
--- product_margins sets data_warning true precisely WHEN total_unit_cogs = 0 --
--- so every zero-cost product was computed as a warning and then thrown away by
--- the filter. On prod that is 72 active variants today, 28 of them already
--- carrying a bill of materials. The one surface built to catch a suspicious
--- margin could not see the suspicious case.
---
--- It is a separate arm, not a relaxed filter, because a zero is not a high
--- margin: it says nobody recorded a cost. Scoped to products that SHOULD have
--- one -- a BOM line, a recipe, a resold source, or a mixed case, whose cost is
--- its packaging -- so services, discounts and equipment do not fill the report
--- with rows nobody can act on. 37 rows on prod, against 72 unscoped.
---
--- A mixed case with no packaging recorded lands here, which is the prompt that
--- was missing: the box, its label and its filler counted as nothing while the
--- bags inside counted correctly, and nothing anywhere said so.
- SELECT 'product'::text AS entity_type,
-    p.product_id AS entity_id,
-    p.product_name AS entity_name,
-    p.company_id,
-    p.facility_id,
-    NULL::numeric AS margin_pct,
-    'No cost recorded'::text AS issue
-   FROM products p
-  WHERE p.is_active AND p.merge_into_id IS NULL
-    AND COALESCE(p.total_unit_cogs, 0::numeric) = 0::numeric
-    AND (p.product_type = 'ptype_bundle'
-         OR p.recipe_id IS NOT NULL
-         OR p.source_consumable_id IS NOT NULL
-         OR (EXISTS ( SELECT 1
-               FROM product_consumables pc
-              WHERE pc.product_id = p.product_id)));
+    p.price,
+    coalesce(p.total_unit_cogs, 0::numeric)           as packaging_cost,
+    coalesce(c.contents_cost, 0::numeric)             as contents_cost,
+    coalesce(p.total_unit_cogs, 0::numeric)
+      + coalesce(c.contents_cost, 0::numeric)         as total_unit_cogs,
+    coalesce(c.item_count, 0::numeric)                as item_count,
+    coalesce(c.children_missing_cost, 0)              as children_missing_cost,
+    round(p.price
+          - (coalesce(p.total_unit_cogs, 0::numeric)
+             + coalesce(c.contents_cost, 0::numeric)), 2) as gross_profit_per_unit,
+    round((coalesce(p.total_unit_cogs, 0::numeric)
+           + coalesce(c.contents_cost, 0::numeric))
+          / nullif(p.price, 0::numeric) * 100::numeric, 1) as cogs_pct,
+    round((p.price
+           - (coalesce(p.total_unit_cogs, 0::numeric)
+              + coalesce(c.contents_cost, 0::numeric)))
+          / nullif(p.price, 0::numeric) * 100::numeric, 1) as margin_pct
+  from products p
+  left join lateral (
+    select sum(coalesce(ch.total_unit_cogs, 0::numeric) * pc.quantity) as contents_cost,
+           sum(pc.quantity)                                            as item_count,
+           count(*) filter (
+             where coalesce(ch.total_unit_cogs, 0::numeric) = 0::numeric
+           )::int                                                      as children_missing_cost
+      from product_components pc
+      left join products ch on ch.product_id = pc.child_product_id
+     where pc.parent_product_id = p.product_id
+  ) c on true
+ where p.product_type = 'ptype_bundle';
 
-alter view public.data_quality_issues set (security_invoker = true);
+alter view public.product_bundle_costs set (security_invoker = true);
+
+-- Cost is staff information. `product_margins` grants anon SELECT and this view
+-- deliberately does not: nothing on the storefront reads a margin.
+revoke all on public.product_bundle_costs from public;
+revoke all on public.product_bundle_costs from anon;
+grant select on public.product_bundle_costs to authenticated, service_role;
+
+-- ── The margin report, which the cost centre actually opens ────────────────
+-- 🔴 ONE CHANGE: `total_unit_cogs` becomes the box's REAL cost for a mixed
+-- case, so every figure derived from it here -- gross profit, margin and the
+-- `data_warning` flag that hides a row behind "incomplete cost data" -- is
+-- right without a single frontend change. The column list is unchanged in name,
+-- type and order, which is what CREATE OR REPLACE requires with
+-- `data_quality_issues` depending on it.
+--
+-- A box with a carton and contents lands at a real margin, so it stops tripping
+-- the >90% "suspiciously high margin" arm it would otherwise trip for ever.
+-- That arm needs no bundle exception; it needed the cost to be true.
+create or replace view public.product_margins as
+ SELECT p.product_id,
+    p.product_name,
+    p.company_id,
+    p.facility_id,
+    p.price,
+    COALESCE(b.total_unit_cogs, p.total_unit_cogs) AS total_unit_cogs,
+    round(p.price - COALESCE(b.total_unit_cogs, p.total_unit_cogs), 2) AS gross_profit_per_unit,
+    round((p.price - COALESCE(b.total_unit_cogs, p.total_unit_cogs))
+          / NULLIF(p.price, 0::numeric) * 100::numeric, 1) AS margin_pct,
+    p.weight_lbs,
+    p.size,
+        CASE
+            WHEN COALESCE(b.total_unit_cogs, p.total_unit_cogs) = 0::numeric THEN true
+            WHEN ((p.price - COALESCE(b.total_unit_cogs, p.total_unit_cogs)) / NULLIF(p.price, 0::numeric) * 100::numeric) < 0::numeric THEN true
+            WHEN ((p.price - COALESCE(b.total_unit_cogs, p.total_unit_cogs)) / NULLIF(p.price, 0::numeric) * 100::numeric) > 90::numeric THEN true
+            ELSE false
+        END AS data_warning
+   FROM products p
+     LEFT JOIN product_bundle_costs b ON b.parent_product_id = p.product_id
+  WHERE p.is_active = true;
+
+alter view public.product_margins set (security_invoker = true);
 
 -- ── Verify ─────────────────────────────────────────────────────────────────
 -- 🔴 STRUCTURAL ONLY, AND EVERY ASSERTION IS SOMETHING THE DESIGN REQUIRES.
@@ -399,22 +395,33 @@ begin
     raise exception 'the resold/other arm lost its unit_cost term';
   end if;
 
-  select pg_get_viewdef('public.data_quality_issues'::regclass, true) into v_def;
-  if v_def not like '%No cost recorded%' then
-    raise exception 'data_quality_issues has no zero-cost arm';
+  select pg_get_viewdef('public.product_bundle_costs'::regclass, true) into v_def;
+  if v_def not like '%product_components%' then
+    raise exception 'product_bundle_costs does not read what is in the box';
   end if;
-  if v_def not like '%Suspiciously high margin%' then
-    raise exception 'data_quality_issues lost its high-margin arm';
-  end if;
-
   select array_to_string(reloptions, ',') into v_opts from pg_class
-   where oid = 'public.data_quality_issues'::regclass;
+   where oid = 'public.product_bundle_costs'::regclass;
   if coalesce(v_opts, '') not like '%security_invoker=true%' then
-    raise exception 'data_quality_issues must stay security_invoker (pg_get_viewdef drops it)';
+    raise exception 'product_bundle_costs must be security_invoker, or it reads across tenants';
   end if;
 
-  -- The view PLANS: a definition that references a column that does not exist
-  -- would otherwise only fail the first time somebody opened Data Health.
+  select pg_get_viewdef('public.product_margins'::regclass, true) into v_def;
+  if v_def not like '%product_bundle_costs%' then
+    raise exception 'product_margins is not using the box cost';
+  end if;
+  if v_def not like '%data_warning%' then
+    raise exception 'product_margins lost data_warning, which the cost centre filters on';
+  end if;
+  select array_to_string(reloptions, ',') into v_opts from pg_class
+   where oid = 'public.product_margins'::regclass;
+  if coalesce(v_opts, '') not like '%security_invoker=true%' then
+    raise exception 'product_margins must stay security_invoker (pg_get_viewdef drops it)';
+  end if;
+
+  -- The views PLAN: a definition naming a column that does not exist would
+  -- otherwise only fail the first time somebody opened a page.
+  perform 1 from public.product_bundle_costs where false;
+  perform 1 from public.product_margins where false;
   perform 1 from public.data_quality_issues where false;
 end
 $verify$;
