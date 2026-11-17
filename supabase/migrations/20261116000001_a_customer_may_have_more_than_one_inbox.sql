@@ -47,14 +47,41 @@ alter table public.customers
 comment on column public.customers.notification_emails is
   'Extra addresses that also receive every notification about this customer: invoices, receipts, payment confirmations, order confirmations, order status, reorder reminders, recall notices, equipment maintenance reminders and resale certificate requests. The address in `email` is the primary and always receives them; these are in addition, each as its own message so a bounce can be told apart. NEVER a login: the storefront invite and the invoice-account magic link are one person''s credential and are not copied here.';
 
+-- 🔴 THE GRANT, BECAUSE A NEW COLUMN INHERITS NONE.
+--
+-- `authenticated` has NO table-level UPDATE on public.customers. UPDATE here
+-- is granted COLUMN BY COLUMN (64 of the 66 columns on prod carry it), because
+-- 20260908000034 deliberately withheld `merge_into_id` and
+-- `provider_vault_customer_id`, and a blanket `grant update on
+-- public.customers` would hand both over. SELECT and INSERT *are* table-level,
+-- so a new column is readable and insertable and only UPDATE is missing --
+-- which is exactly the case nothing else here would catch.
+--
+-- Without this line the column is READ-ONLY to every logged-in user:
+-- `updateCustomer` (app/app/(app)/customers/actions.ts:215,255) writes through
+-- `createUserClient()` as `authenticated` and fails 42501 on every save, while
+-- the field renders, accepts typing, and -- because the customer page commits
+-- optimistically -- leaves the operator's typing on screen for ever. The
+-- migration still applies, CI still goes green, and the verify block below
+-- would still have passed: a grant is not a column, a constraint or a body.
+--
+-- Column-level, to match how UPDATE is granted on this table: the same line
+-- 20261004000004:199-201 needed for `chain_id`.
+grant update (notification_emails) on public.customers to authenticated;
+
 -- A cap, because every address is one more message per document and the fan-out
 -- runs inside a bulk send that already walks the invoices one at a time. Ten is
 -- past any real A/P department and well short of a paste accident.
+--
+-- `cardinality`, not `array_length(x, 1)`: array_length counts one DIMENSION,
+-- so `{{a,b},{c,d}}` with fifty addresses a side reads 2 and sails through a
+-- cap of ten. cardinality counts elements however they are nested, and returns
+-- 0 for the empty default, so it needs no coalesce.
 alter table public.customers
   drop constraint if exists customers_notification_emails_capped;
 alter table public.customers
   add constraint customers_notification_emails_capped
-  check (coalesce(array_length(notification_emails, 1), 0) <= 10);
+  check (cardinality(notification_emails) <= 10);
 
 -- 🔴 THE BOUNCE FLAG MUST STAY ABOUT THE CUSTOMER'S OWN ADDRESS.
 --
@@ -127,7 +154,18 @@ begin
     raise exception 'customers.notification_emails does not default to the empty list (default is %)', coalesce(v_default, '<none>');
   end if;
 
-  -- 2. The cap is real.
+  -- 2. `authenticated` can actually WRITE it, and the grant is still the
+  --    column-level kind. Nothing else in this block would notice either way:
+  --    the column, the constraint and the function body would all read exactly
+  --    as asserted while every save in the app failed 42501.
+  if not has_column_privilege('authenticated', 'public.customers', 'notification_emails', 'UPDATE') then
+    raise exception 'authenticated cannot UPDATE customers.notification_emails; the column is read-only to the app, so every save fails 42501 while the field still renders and accepts typing';
+  end if;
+  if has_table_privilege('authenticated', 'public.customers', 'UPDATE') then
+    raise exception 'UPDATE on public.customers is now granted at TABLE level, which hands authenticated the two columns 20260908000034 withheld on purpose (merge_into_id, provider_vault_customer_id)';
+  end if;
+
+  -- 3. The cap is real.
   if not exists (
     select 1 from pg_constraint
     where conrelid = 'public.customers'::regclass
@@ -136,7 +174,7 @@ begin
     raise exception 'customers_notification_emails_capped is missing; one paste could turn a single invoice into hundreds of messages';
   end if;
 
-  -- 3. The bounce guard reads the sender's own answer, and still flags the
+  -- 4. The bounce guard reads the sender's own answer, and still flags the
   --    customer -- a replacement that dropped either half would be silent.
   select p.prosrc into v_src
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -152,7 +190,7 @@ begin
     raise exception 'flag_customer_on_email_bounce no longer flags the customer; the behaviour that existed before this migration has been lost';
   end if;
 
-  -- 4. ...and it is still wired to the table, on UPDATE.
+  -- 5. ...and it is still wired to the table, on UPDATE.
   select t.tgtype into v_tg
   from pg_trigger t
   where t.tgrelid = 'public.email_log'::regclass
