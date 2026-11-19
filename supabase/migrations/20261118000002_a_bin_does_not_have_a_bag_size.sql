@@ -168,6 +168,7 @@ $function$;
 do $$
 declare
   v_src text;
+  v_code text;
 begin
   select p.prosrc into v_src
   from pg_proc p join pg_namespace n on n.oid = p.pronamespace
@@ -177,28 +178,36 @@ begin
     raise exception 'move_coffee_source_to_group is missing';
   end if;
 
+  -- 🔴 STRIP THE COMMENTS BEFORE MATCHING. `prosrc` is the whole body,
+  -- comments included, so a check for a pattern the body DOCUMENTS matches the
+  -- documentation and not the code. That is how this block first failed: the
+  -- comment explaining what COALESCE(v_bag_size, 0) used to do satisfied the
+  -- grep for it. Worse is the other direction -- a "must be present" check
+  -- passing on a comment -- which reads as green.
+  v_code := regexp_replace(v_src, '--[^' || chr(10) || ']*', '', 'g');
+
   -- 1. The group-wide denominator, and its invented 154, are gone.
-  if v_src ~ 'COALESCE\(bag_size::numeric, 154\)' then
+  if v_code ~ 'COALESCE\(bag_size::numeric, 154\)' then
     raise exception 'the group-wide bag size is still being read, so bags mode still converts at one denominator';
   end if;
 
   -- 2. The conversion happens at the lot.
-  if v_src !~ 'NULLIF\(v_lot\.bag_size' then
+  if v_code !~ 'NULLIF\(v_lot\.bag_size' then
     raise exception 'bags are not being converted at each lot own size';
   end if;
 
   -- 3. Controls that must still PASS. A guard that only ever fires on failure
   --    says nothing about the parts it never looked at.
-  if v_src !~ 'books closed through' then
+  if v_code !~ 'books closed through' then
     raise exception 'a books-closed guard went missing';
   end if;
-  if v_src !~ 'unknown mode' then
+  if v_code !~ 'unknown mode' then
     raise exception 'the mode guard went missing, so an unknown mode would silently do nothing';
   end if;
-  if v_src !~ 'recalculate_origin_total_stock' then
+  if v_code !~ 'recalculate_origin_total_stock' then
     raise exception 'the stock recompute calls went missing, so both origins would keep stale totals';
   end if;
-  if v_src !~ 'ORDER BY COALESCE\(sr\.date_received' then
+  if v_code !~ 'ORDER BY COALESCE\(sr\.date_received' then
     raise exception 'the FIFO order went missing, so a move would no longer draw the oldest lot first';
   end if;
 

@@ -133,6 +133,7 @@ $function$;
 do $$
 declare
   v_src     text;
+  v_code    text;
   v_trigger text;
 begin
   select p.prosrc into v_src
@@ -144,28 +145,36 @@ begin
     raise exception 'compute_coffee_purchase_amount is missing';
   end if;
 
+  -- 🔴 STRIP THE COMMENTS BEFORE MATCHING. `prosrc` is the whole body,
+  -- comments included, so a check for a pattern the body DOCUMENTS matches the
+  -- documentation and not the code. That is how this block first failed: the
+  -- comment explaining what COALESCE(v_bag_size, 0) used to do satisfied the
+  -- grep for it. Worse is the other direction -- a "must be present" check
+  -- passing on a comment -- which reads as green.
+  v_code := regexp_replace(v_src, '--[^' || chr(10) || ']*', '', 'g');
+
   -- 1. The caller's own value is consulted first.
-  if v_src !~ 'COALESCE\(\s*NULLIF\(NEW\.bag_size' then
+  if v_code !~ 'COALESCE\(\s*NULLIF\(NEW\.bag_size' then
     raise exception 'the supplied bag_size is not the first COALESCE term, so "Just this order" is still a no-op';
   end if;
 
   -- 2. The raw-value assignment is gone, so bag_size and amount can no longer
   --    be derived at different denominators.
-  if v_src ~ 'NEW\.bag_size\s*:=\s*v_bag_size_text' then
+  if v_code ~ 'NEW\.bag_size\s*:=\s*v_bag_size_text' then
     raise exception 'bag_size is still assigned the raw coffee_source value while amount uses the resolved one';
   end if;
 
   -- 3. An empty-string size falls through instead of aborting the save.
-  if v_src !~ 'NULLIF\(v_bag_size_text' or v_src !~ 'NULLIF\(ci\.bag_size' then
+  if v_code !~ 'NULLIF\(v_bag_size_text' or v_code !~ 'NULLIF\(ci\.bag_size' then
     raise exception 'an empty-string bag size can still abort the save with a numeric cast error';
   end if;
 
   -- 4. Controls that must still PASS -- a check that only ever fires on
   --    failure proves nothing about the parts it never looked at.
-  if v_src !~ '154' then
+  if v_code !~ '154' then
     raise exception 'the universal 154 fallback is gone; a line with no source anywhere would price at zero';
   end if;
-  if v_src !~ 'NEW\.amount\s*/\s*NEW\.bags_ordered' then
+  if v_code !~ 'NEW\.amount\s*/\s*NEW\.bags_ordered' then
     raise exception 'the amount_manual branch is gone; an exact net weight would stop deriving its per-bag size';
   end if;
 
