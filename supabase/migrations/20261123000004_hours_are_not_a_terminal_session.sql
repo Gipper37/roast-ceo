@@ -235,6 +235,20 @@ create policy time_clock_entry_self_update
 
 -- A supervisor: approve, reject, amend, or enter a shift on someone's
 -- behalf. This is the only way a row reaches 'approved'.
+--
+-- 🔴 AN APPROVAL NAMES ITS APPROVER, AND THE APPROVER IS THE ACTOR. Without
+-- the second leg a holder of time.approve could write any colleague's
+-- team_member_id into approved_by -- signing somebody else's name to a
+-- ruling, in the one column the record exists to carry. The permission says
+-- who may rule; it does not say whose name goes on the ruling, and only the
+-- database can settle that.
+--
+-- Approving your OWN typed shift is deliberately allowed. A roastery whose
+-- only supervisor is the owner has nobody above them, and refusing would
+-- leave their forgotten clock-out pending for ever -- a rule whose only
+-- benefit is that an edge case disappears. The fact is not hidden: a row
+-- whose approved_by equals its team_member_id reads as "approved by
+-- themselves" on the timesheet, which is what an auditor needs to see.
 create policy time_clock_entry_approve_write
   on public.time_clock_entry
   for all to authenticated
@@ -245,6 +259,10 @@ create policy time_clock_entry_approve_write
   with check (
     company_id in (select auth_company_ids())
     and auth_has_permission('time.approve', company_id)
+    and (
+      approval_state not in ('approved', 'rejected')
+      or approved_by = (select team_member_id from public.actor_at(now()) limit 1)
+    )
   );
 
 
@@ -419,6 +437,20 @@ begin
      and coalesce(qual,'') || coalesce(with_check,'') not like '%auth_has_permission%';
   if v_n <> 0 then
     raise exception '% policies on time_clock_entry name no permission', v_n;
+  end if;
+
+  -- CONTROL: the approve policy pins WHOSE NAME goes on a ruling. The
+  -- permission decides who may rule; without this leg a holder could write
+  -- a colleague's team_member_id into approved_by and the audit trail would
+  -- name the wrong person.
+  if not exists (
+    select 1 from pg_policies
+     where schemaname='public' and tablename='time_clock_entry'
+       and policyname='time_clock_entry_approve_write'
+       and with_check like '%approved_by%'
+       and with_check like '%actor_at%'
+  ) then
+    raise exception 'the approve policy does not pin approved_by to the actor; an approval could carry somebody else''s name';
   end if;
 
   -- The three keys exist, are plan-gated, and each is held by somebody.
