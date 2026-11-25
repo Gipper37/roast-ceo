@@ -65,22 +65,37 @@ echo "  ================================================================"
 
 q() { "$PSQL" -X -q -At "$URL" -c "$1"; }
 
-PRED="shipping_cost is not null
+# 🔴 THE NUMERATOR IS SHIPPING + TAXES/FEES since migration 20261124000003.
+# This predicate IS the definition of "already correct", so leaving freight
+# alone in it would report every shipment carrying a tax figure as unfixed
+# forever, and the error metric below would count that tax as misstated freight.
+PRED="(shipping_cost is not null or taxes_fees is not null)
    and shipping_cost_unit is distinct from
        (case when shipment_total_weight_units > 0
-             then shipping_cost / shipment_total_weight_units else 0 end)"
+             then (coalesce(shipping_cost, 0) + coalesce(taxes_fees, 0))
+                  / shipment_total_weight_units else 0 end)"
 REMAINING_SQL="select count(*) from public.shipment_received where $PRED;"
 IDS_SQL="select shipment_id from public.shipment_received where $PRED order by shipment_id;"
-ERROR_SQL="select coalesce(round(sum(abs(shipping_cost_unit * shipment_total_weight_units - shipping_cost)), 2), 0)
- from public.shipment_received where shipping_cost is not null and shipment_total_weight_units > 0;"
+ERROR_SQL="select coalesce(round(sum(abs(shipping_cost_unit * shipment_total_weight_units
+                                     - (coalesce(shipping_cost, 0) + coalesce(taxes_fees, 0)))), 2), 0)
+ from public.shipment_received
+ where (shipping_cost is not null or taxes_fees is not null) and shipment_total_weight_units > 0;"
 
 # Without the migration the trigger re-derives the same rounded value and every
 # row is a no-op; say so instead of grinding through all of them.
-if q "select pg_get_functiondef(p.oid) like '%ROUND%' from pg_proc p
+# 🔴 BOTH WRITERS, not one. calculate_shipment_totals_for() also sets
+# shipping_cost_unit -- it is reached from the line triggers
+# update_shipment_on_coffee / update_shipment_on_consumable -- and it kept its
+# ROUND until 20261124000004. With only the first writer checked, this script
+# would correct rows that the next line edit silently rounded back.
+if q "select count(*) > 0 from pg_proc p
         join pg_namespace n on n.oid=p.pronamespace
-       where n.nspname='public' and p.proname='calculate_shipping_per_unit';" | grep -q '^t$'; then
-  echo "  ✗ calculate_shipping_per_unit still ROUNDs here."
-  echo "    Apply migration 20261030000004 first, or every row is a no-op."
+       where n.nspname='public'
+         and p.proname in ('calculate_shipping_per_unit','calculate_shipment_totals_for')
+         and pg_get_functiondef(p.oid) like '%ROUND%';" | grep -q '^t$'; then
+  echo "  ✗ a writer of shipping_cost_unit still ROUNDs here."
+  echo "    Apply migrations 20261030000004 and 20261124000004 first,"
+  echo "    or every row is a no-op or is rounded back by the next line edit."
   exit 1
 fi
 
