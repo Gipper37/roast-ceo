@@ -70,7 +70,15 @@ create table if not exists public.order_activity (
   order_activity_id  uuid primary key default gen_random_uuid(),
   company_id         text not null,
   order_id           text not null references public.orders(order_id) on delete cascade,
-  happened_at        timestamptz not null default now(),
+  -- 🔴 clock_timestamp(), NOT now(). `now()` is the TRANSACTION's start time,
+  -- so every event written by one transaction gets the SAME instant and the
+  -- page cannot order them: an order created and immediately packed would show
+  -- "Marked Packed" above or below "Order created" at random, and one UPDATE
+  -- moving two tracked columns writes two rows that tie outright. The log's
+  -- whole claim is the sequence, so it records when each event actually
+  -- happened. (`config_audit_log` uses now(), and can: it writes one row per
+  -- statement and is read per table, not as a timeline.)
+  happened_at        timestamptz not null default clock_timestamp(),
   event              text not null,
   -- 🔴 THE ID *AND* THE NAME, DELIBERATELY DENORMALISED. A log records what
   -- was true at the time. Resolving the name at READ time by joining `team`
@@ -272,12 +280,26 @@ for each row execute function public.order_activity_row();
 
 alter table public.order_activity enable row level security;
 
--- 🔴 A COLUMN INHERITS NO PRIVILEGE IN THIS PROJECT, so the grant is explicit
--- and SELECT-only. Nothing may write this table but the trigger above, which
--- is SECURITY DEFINER and therefore needs no grant of its own. An app that
--- cannot forge a log entry is the point.
+-- 🔴 EVERY PRIVILEGE OFF FIRST, AND EVERY ROLE NAMED. Naming the three writes
+-- to revoke is not enough, and staging proved it: on a real Supabase project a
+-- new table in `public` arrives with the default ACL already applied --
+-- `authenticated` holds SELECT, INSERT, UPDATE, DELETE and REFERENCES, and
+-- `anon` holds those plus TRUNCATE and TRIGGER. Revoking insert/update/delete
+-- by name left REFERENCES on `authenticated` and left `anon` holding all seven,
+-- and only RLS stood between a signed-out caller and this table. The verify
+-- block below caught it on the staging push, which is what staging is for.
+--
+-- 🔴 `revoke ... from public, anon` does NOT revoke from `authenticated`
+-- ([[gotcha_revoke_from_public_does_not_revoke_from_authenticated]]), so all
+-- three are named -- the same line `config_audit_log` uses (20260906000003:178).
+-- `service_role` keeps its default, as it does there: the dev portal reads
+-- these tables and nothing in the app runs as that role by accident.
+--
+-- Then exactly one privilege back. Nothing may WRITE this table but the two
+-- trigger functions, which are SECURITY DEFINER and need no grant of their
+-- own. An app that cannot forge a log entry is the point.
+revoke all on public.order_activity from public, anon, authenticated;
 grant select on public.order_activity to authenticated;
-revoke insert, update, delete on public.order_activity from authenticated;
 
 drop policy if exists order_activity_read on public.order_activity;
 create policy order_activity_read
@@ -472,6 +494,26 @@ begin
      and grantee = 'authenticated' and privilege_type <> 'SELECT';
   if n <> 0 then
     raise exception 'order_activity: authenticated holds % privileges beyond SELECT', n;
+  end if;
+
+  -- And `anon` holds nothing at all. It is a different role with its own
+  -- default grant, and a revoke aimed at `authenticated` never touches it.
+  select count(*) into n
+    from information_schema.role_table_grants
+   where table_schema = 'public' and table_name = 'order_activity'
+     and grantee IN ('anon', 'PUBLIC');
+  if n <> 0 then
+    raise exception 'order_activity: anon still holds % privileges', n;
+  end if;
+
+  -- The one row that proves SELECT survived the revoke-all above: an empty
+  -- ACL would pass both checks and leave the page unable to read its own log.
+  select count(*) into n
+    from information_schema.role_table_grants
+   where table_schema = 'public' and table_name = 'order_activity'
+     and grantee = 'authenticated' and privilege_type = 'SELECT';
+  if n <> 1 then
+    raise exception 'order_activity: authenticated cannot SELECT it (% rows)', n;
   end if;
 end $$;
 
